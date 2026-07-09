@@ -1,0 +1,141 @@
+{
+  "user_name": "zhangsan",
+  "total_add_lines": 1500,
+  "groups": ["frontend-team"],
+  "sessions": [
+    {
+      "session_uuid": "sess-001",
+      "session_abstract": [
+        {
+          "user_msg": "帮我写一个React登录页面组件，包含邮箱和密码输入框",
+          "assistant_reply": "好的，我来创建一个LoginPage组件，使用React hooks管理表单状态..."
+        },
+        {
+          "user_msg": "给登录按钮加一个loading状态，提交时显示加载动画",
+          "assistant_reply": "已添加isLoading状态，按钮在提交时会显示Spinner并禁用..."
+        }
+      ],
+      "mcp_tools": ["read_file", "write_file", "grep"],
+      "skills": ["react-component"]
+    },
+    {
+      "session_uuid": "sess-002",
+      "session_abstract": [
+        {
+          "user_msg": "这段代码在生产环境报错了，帮我debug：TypeError: Cannot read property 'map' of undefined",
+          "assistant_reply": "这个错误说明你在对一个undefined值调用.map()。让我看看调用栈..."
+        },
+        {
+          "user_msg": "那为什么API返回的数据会是undefined？",
+          "assistant_reply": "可能是网络请求失败了或者响应格式不对。让我检查一下fetch调用..."
+        }
+      ],
+      "mcp_tools": ["read_file", "grep"],
+      "skills": []
+    },
+    {
+      "session_uuid": "sess-003",
+      "session_abstract": [
+        {
+          "user_msg": "把这个Python脚本改成异步的，现在同步调用太慢了",
+          "assistant_reply": "我来用asyncio和aiohttp重构这个脚本，把所有的HTTP请求改成并发执行..."
+        }
+      ],
+      "mcp_tools": ["read_file", "write_file"],
+      "skills": ["python-refactor"]
+    },
+    {
+      "session_uuid": "sess-004",
+      "session_abstract": [
+        {
+          "user_msg": "帮我review一下这个PR的代码，看看有没有性能问题",
+          "assistant_reply": "我已经review了这个PR。主要发现：1. 第45行的循环可以优化为批量查询..."
+        },
+        {
+          "user_msg": "第3点能详细说一下吗？为什么会导致N+1查询？",
+          "assistant_reply": "因为在循环内每次都执行一次数据库查询，对于100条记录就是101次查询..."
+        }
+      ],
+      "mcp_tools": ["read_file", "grep"],
+      "skills": ["code-review"]
+    },
+    {
+      "session_uuid": "sess-005",
+      "session_abstract": [
+        {
+          "user_msg": "写一个Dockerfile来部署这个Node.js应用",
+          "assistant_reply": "我来为你创建一个多阶段构建的Dockerfile，使用alpine作为基础镜像..."
+        }
+      ],
+      "mcp_tools": ["write_file"],
+      "skills": ["docker"]
+    },
+    {
+      "session_uuid": "sess-006",
+      "session_abstract": [
+        {
+          "user_msg": "给我讲讲这个项目的整体架构，我刚接手还不熟悉",
+          "assistant_reply": "这个项目采用微服务架构，主要有三个服务：api-gateway、user-service和order-service..."
+        },
+        {
+          "user_msg": "数据库表之间的关系是怎样的？",
+          "assistant_reply": "核心有5张表：users、orders、products、order_items和payments..."
+        }
+      ],
+      "mcp_tools": ["read_file", "glob", "grep"],
+      "skills": []
+    },
+    {
+      "session_uuid": "sess-007",
+      "session_abstract": [
+        {
+          "user_msg": "把所有console.log删掉，换成统一的logger",
+          "assistant_reply": "我来找出所有console.log调用并替换为项目统一的logger..."
+        }
+      ],
+      "mcp_tools": ["grep", "edit_file"],
+      "skills": []
+    },
+    {
+      "session_uuid": "sess-008",
+      "session_abstract": [
+        {
+          "user_msg": "我要实现一个新功能：用户可以用手机号+验证码登录",
+          "assistant_reply": "好的，我先梳理一下需要改动的地方：1. 新增sms验证码发送接口..."
+        },
+        {
+          "user_msg": "验证码用Redis存，过期时间5分钟",
+          "assistant_reply": "已添加Redis配置，验证码key格式为sms:code:{phone}，TTL设为300秒..."
+        }
+      ],
+      "mcp_tools": ["read_file", "write_file", "grep", "glob"],
+      "skills": ["feature-dev"]
+    },
+    {
+      "session_uuid": "sess-009",
+      "session_abstract": [
+        {
+          "user_msg": "这个SQL查询太慢了，帮我优化一下",
+          "assistant_reply": "我先用EXPLAIN ANALYZE看看执行计划...发现缺少索引，我来创建复合索引..."
+        }
+      ],
+      "mcp_tools": ["read_file"],
+      "skills": []
+    },
+    {
+      "session_uuid": "sess-010",
+      "session_abstract": [
+        {
+          "user_msg": "写单元测试覆盖这个service的所有方法",
+          "assistant_reply": "我来为UserService编写完整的单元测试，使用jest和mock..."
+        },
+        {
+          "user_msg": "再加一些边界情况的测试，比如空输入、超长字符串",
+          "assistant_reply": "已添加边界测试用例，包括null、undefined、空字符串、超长输入等..."
+        }
+      ],
+      "mcp_tools": ["read_file", "write_file", "grep"],
+      "skills": ["testing"]
+    }
+  ]
+}

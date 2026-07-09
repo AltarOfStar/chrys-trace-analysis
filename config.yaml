@@ -1,0 +1,17 @@
+llm:
+  api_endpoint: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  model_name: "gpt-4o"
+  temperature: 0.3
+  max_tokens: 4096
+
+pipeline:
+  batch_size: 200
+  num_scenarios_min: 5
+  num_scenarios_max: 10
+  random_seed: 42
+  classification_batch_size: 50
+
+paths:
+  data_dir: "./data"
+  output_dir: "./output"
