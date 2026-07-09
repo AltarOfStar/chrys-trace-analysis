@@ -14,6 +14,7 @@ class LLMConfig(BaseModel):
     model_name: str
     temperature: float = 0.3
     max_tokens: int = 4096
+    no_proxy: bool = False
 
 
 class PipelineConfig(BaseModel):

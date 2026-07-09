@@ -1,16 +1,17 @@
 llm:
-  api_endpoint: "https://api.openai.com/v1"
-  api_key: "${OPENAI_API_KEY}"
-  model_name: "gpt-4o"
-  temperature: 0.3
-  max_tokens: 4096
+  api_endpoint: "http://mlops.huawei.com/mlops-service/api/v2/agentService/v1"
+  api_key: "sk-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50SWQiOiJtMDA5NjUxMjciLCJhY2NvdW50TmFtZSI6Im1hb3FpaGVuZyIsImRlcGFydG1lbnROYW1lIjoidW5rbm93biIsInRlbmFudElkIjoiOTM2YjNmOTQ5Yzg4MWQzMjY5OGRlNGYwYzc5MGI5NmQiLCJrZXlWZXJzaW9uIjoiMi4wIn0.32pZ2Z4Za7IGmUeHW76bnHHFFpDW489L83FsrT4QQH4"
+  model_name: "qwen36-27b-vl"
+  temperature: 0.7
+  max_tokens: 8192
+  no_proxy: true
 
 pipeline:
-  batch_size: 200
+  batch_size: 20
   num_scenarios_min: 5
   num_scenarios_max: 10
   random_seed: 42
-  classification_batch_size: 50
+  classification_batch_size: 20
 
 paths:
   data_dir: "./data"

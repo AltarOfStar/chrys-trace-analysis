@@ -68,7 +68,11 @@ def classify_sessions(
         user_prompt = _format_classification_prompt(batch, scenarios)
         raw = client.chat_json(CLASSIFY_SYSTEM_PROMPT, user_prompt)
 
+        # Build a lookup for session_uuid -> user_name
+        uuid_to_user = {s.session_uuid: u for u, s in batch}
+
         for item in raw:
+            item["user_name"] = uuid_to_user.get(item.get("session_uuid", ""), "")
             cs = ClassifiedSession.model_validate(item)
             if cs.scenario_name not in scenario_names:
                 logger.warning(

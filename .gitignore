@@ -24,6 +24,9 @@ Thumbs.db
 # Output (generated analysis results)
 output/
 
+# Trace data
+data/
+
 # Environment
 .env
 .env.local

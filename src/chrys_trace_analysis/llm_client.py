@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
 from openai import OpenAI
 
 from .config import LLMConfig
@@ -13,7 +14,21 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.client = OpenAI(base_url=config.api_endpoint, api_key=config.api_key)
+        if config.no_proxy:
+            http_client = httpx.Client(
+                transport=httpx.HTTPTransport(retries=0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
+            )
+        else:
+            http_client = httpx.Client(
+                timeout=httpx.Timeout(300.0, connect=10.0),
+            )
+        self.client = OpenAI(
+            base_url=config.api_endpoint,
+            api_key=config.api_key,
+            http_client=http_client,
+            max_retries=0,
+        )
 
     def chat(self, system_prompt: str, user_prompt: str) -> str:
         logger.info("LLM chat: model=%s, user_prompt_len=%d",
