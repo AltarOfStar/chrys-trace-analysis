@@ -27,6 +27,10 @@ class Scenario(BaseModel):
     description: str
 
 
+class ScenarioWithTrace(Scenario):
+    representative_session_uuid: str
+
+
 class ClassifiedSession(BaseModel):
     session_uuid: str
     user_name: str

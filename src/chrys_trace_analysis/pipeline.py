@@ -10,40 +10,47 @@ from .config import Config
 from .loader import load_user_files
 from .llm_client import LLMClient
 from .models import AnalysisResult, Scenario, Session
-from .sampler import flatten_all_sessions, sample_sessions
+from .sampler import flatten_all_sessions, sample_multiple_groups
 from .scenario import identify_scenarios
 
 logger = logging.getLogger(__name__)
 
 
 def _save_sampled_sessions(
-    sampled: list[tuple[str, Session]],
+    sampled_groups: list[list[tuple[str, Session]]],
     scenarios: list[Scenario],
     output_dir: Path,
 ) -> None:
     output_path = output_dir / "sampled_sessions.json"
     data = {
         "scenarios": [s.model_dump() for s in scenarios],
-        "sessions": [
+        "groups": [
             {
-                "user_name": user_name,
-                "session_uuid": session.session_uuid,
-                "mcp_tools": session.mcp_tools,
-                "skills": session.skills,
-                "rounds": [
-                    {"user_msg": r.user_msg, "assistant_reply": r.assistant_reply}
-                    for r in session.session_abstract
+                "group_index": i + 1,
+                "sessions": [
+                    {
+                        "user_name": user_name,
+                        "session_uuid": session.session_uuid,
+                        "mcp_tools": session.mcp_tools,
+                        "skills": session.skills,
+                        "rounds": [
+                            {"user_msg": r.user_msg, "assistant_reply": r.assistant_reply}
+                            for r in session.session_abstract
+                        ],
+                    }
+                    for user_name, session in group
                 ],
             }
-            for user_name, session in sampled
+            for i, group in enumerate(sampled_groups)
         ],
     }
     output_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    logger.info("Saved %d sampled sessions and %d scenarios to %s",
-                len(sampled), len(scenarios), output_path)
+    total_sessions = sum(len(g) for g in sampled_groups)
+    logger.info("Saved %d groups (%d total sessions) and %d scenarios to %s",
+                len(sampled_groups), total_sessions, len(scenarios), output_path)
 
 
 def run(config: Config) -> AnalysisResult:
@@ -51,16 +58,19 @@ def run(config: Config) -> AnalysisResult:
     if not users:
         raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
 
-    sampled = sample_sessions(
-        users, config.pipeline.batch_size, config.pipeline.random_seed,
+    sampled_groups = sample_multiple_groups(
+        users, config.pipeline.batch_size, config.pipeline.num_sample_groups,
+        config.pipeline.random_seed,
     )
-    logger.info("Sampled %d sessions for scenario discovery", len(sampled))
+    total_sampled = sum(len(g) for g in sampled_groups)
+    logger.info("Sampled %d groups × %d sessions = %d total for scenario discovery",
+                len(sampled_groups), config.pipeline.batch_size, total_sampled)
 
     client = LLMClient(config.llm)
 
-    scenarios = identify_scenarios(client, sampled, config.pipeline)
+    scenarios = identify_scenarios(client, sampled_groups, config.pipeline)
 
-    _save_sampled_sessions(sampled, scenarios, config.paths.output_dir)
+    _save_sampled_sessions(sampled_groups, scenarios, config.paths.output_dir)
 
     all_sessions = flatten_all_sessions(users)
     classified = classify_sessions(

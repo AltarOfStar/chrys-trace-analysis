@@ -19,6 +19,7 @@ class LLMConfig(BaseModel):
 
 class PipelineConfig(BaseModel):
     batch_size: int = 200
+    num_sample_groups: int = 5
     num_scenarios_min: int = 5
     num_scenarios_max: int = 10
     random_seed: int | None = 42

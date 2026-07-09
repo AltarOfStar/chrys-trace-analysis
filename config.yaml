@@ -8,6 +8,7 @@ llm:
 
 pipeline:
   batch_size: 30
+  num_sample_groups: 5
   num_scenarios_min: 5
   num_scenarios_max: 10
   random_seed: 42
