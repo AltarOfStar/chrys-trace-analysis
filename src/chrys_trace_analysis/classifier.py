@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from .llm_client import LLMClient
 from .models import ClassifiedSession, Scenario, Session
 
 logger = logging.getLogger(__name__)
+
+_BAR_WIDTH = 40
+
+
+def _render_progress(processed: int, total: int, batch_num: int, total_batches: int) -> str:
+    pct = processed / total if total > 0 else 0
+    filled = int(_BAR_WIDTH * pct)
+    bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+    return f"\r  [{bar}] {processed}/{total} sessions | batch {batch_num}/{total_batches}"
 
 CLASSIFY_SYSTEM_PROMPT = """You are a classification expert. You will be given a list of coding agent usage scenarios and a batch of conversation trajectories.
 
@@ -59,11 +69,16 @@ def classify_sessions(
     results: list[ClassifiedSession] = []
     total = len(users_sessions)
     scenario_names = {s.name for s in scenarios}
+    total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
 
-    for start in range(0, total, batch_size):
+    logger.info("Classification queue: %d sessions in %d batches", total, total_batches)
+
+    for batch_num, start in enumerate(range(0, total, batch_size), 1):
         batch = users_sessions[start:start + batch_size]
-        logger.info("Classifying batch %d-%d of %d sessions...",
-                    start + 1, start + len(batch), total)
+        processed_so_far = min(start + batch_size, total)
+        message = _render_progress(processed_so_far, total, batch_num, total_batches)
+        sys.stderr.write(message)
+        sys.stderr.flush()
 
         user_prompt = _format_classification_prompt(batch, scenarios)
         raw = client.chat_json(CLASSIFY_SYSTEM_PROMPT, user_prompt)
@@ -82,6 +97,9 @@ def classify_sessions(
                 )
                 cs.scenario_name = scenarios[0].name
             results.append(cs)
+
+    sys.stderr.write("\n")
+    sys.stderr.flush()
 
     expected_uuids = {s.session_uuid for _, s in users_sessions}
     got_uuids = {cs.session_uuid for cs in results}
