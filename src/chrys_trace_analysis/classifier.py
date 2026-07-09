@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 import sys
 
+import openai
+from httpx import ReadTimeout
+
 from .llm_client import LLMClient
 from .models import ClassifiedSession, Scenario, Session
 
 logger = logging.getLogger(__name__)
 
 _BAR_WIDTH = 40
+
+_MAX_RETRIES = 3
 
 
 def _render_progress(processed: int, total: int, batch_num: int, total_batches: int) -> str:
@@ -60,6 +65,59 @@ def _format_classification_prompt(
 {chr(10).join('---' + chr(10) + t for t in session_texts)}"""
 
 
+def _classify_batch(
+    client: LLMClient,
+    batch: list[tuple[str, Session]],
+    scenarios: list[Scenario],
+    scenario_names: set[str],
+    batch_num: int,
+    retries: int = _MAX_RETRIES,
+) -> list[ClassifiedSession] | None:
+    uuid_to_user = {s.session_uuid: u for u, s in batch}
+
+    for attempt in range(1, retries + 1):
+        try:
+            user_prompt = _format_classification_prompt(batch, scenarios)
+            raw = client.chat_json(CLASSIFY_SYSTEM_PROMPT, user_prompt)
+        except (ReadTimeout, openai.APITimeoutError) as exc:
+            logger.warning(
+                "Batch %d timed out (attempt %d/%d): %s",
+                batch_num, attempt, retries, exc,
+            )
+            continue
+        except Exception as exc:
+            logger.warning(
+                "Batch %d failed with unexpected error (attempt %d/%d): %s",
+                batch_num, attempt, retries, exc,
+            )
+            continue
+
+        results: list[ClassifiedSession] = []
+        try:
+            for item in raw:
+                item["user_name"] = uuid_to_user.get(item.get("session_uuid", ""), "")
+                cs = ClassifiedSession.model_validate(item)
+                if cs.scenario_name not in scenario_names:
+                    logger.warning(
+                        "Session %s classified as unknown scenario '%s', "
+                        "using first scenario as fallback",
+                        cs.session_uuid, cs.scenario_name,
+                    )
+                    cs.scenario_name = scenarios[0].name
+                results.append(cs)
+            return results
+        except Exception as exc:
+            logger.warning(
+                "Batch %d response parsing failed (attempt %d/%d): %s",
+                batch_num, attempt, retries, exc,
+            )
+            continue
+
+    logger.error("Batch %d failed after %d retries, skipping %d sessions.",
+                 batch_num, retries, len(batch))
+    return None
+
+
 def classify_sessions(
     client: LLMClient,
     users_sessions: list[tuple[str, Session]],
@@ -80,23 +138,9 @@ def classify_sessions(
         sys.stderr.write(message)
         sys.stderr.flush()
 
-        user_prompt = _format_classification_prompt(batch, scenarios)
-        raw = client.chat_json(CLASSIFY_SYSTEM_PROMPT, user_prompt)
-
-        # Build a lookup for session_uuid -> user_name
-        uuid_to_user = {s.session_uuid: u for u, s in batch}
-
-        for item in raw:
-            item["user_name"] = uuid_to_user.get(item.get("session_uuid", ""), "")
-            cs = ClassifiedSession.model_validate(item)
-            if cs.scenario_name not in scenario_names:
-                logger.warning(
-                    "Session %s classified as unknown scenario '%s', "
-                    "using first scenario as fallback",
-                    cs.session_uuid, cs.scenario_name,
-                )
-                cs.scenario_name = scenarios[0].name
-            results.append(cs)
+        batch_results = _classify_batch(client, batch, scenarios, scenario_names, batch_num)
+        if batch_results is not None:
+            results.extend(batch_results)
 
     sys.stderr.write("\n")
     sys.stderr.flush()

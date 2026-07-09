@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import httpx
 from openai import OpenAI
@@ -9,6 +10,21 @@ from openai import OpenAI
 from .config import LLMConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_common_json_errors(text: str) -> str:
+    """Attempt to fix common JSON formatting issues from LLM output."""
+    # Remove trailing commas before ] or }
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    # Remove trailing comma in the last element of a single-line object/array
+    text = re.sub(r",\s*$", "", text, flags=re.MULTILINE)
+    # Replace single quotes with double quotes, but only outside of already-quoted strings
+    # This is a simple approach: replace ' that appear to be JSON keys/values
+    text = re.sub(r"(?<!\\)'", '"', text)
+    # Remove comments (// and /* */)
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return text
 
 
 class LLMClient:
@@ -55,9 +71,18 @@ class LLMClient:
                 lines = lines[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
-            raw = "\n".join(lines)
+            raw = "\n".join(lines).strip()
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            logger.error("Failed to parse LLM JSON response: %s", raw[:500])
-            raise
+            logger.warning("Initial JSON parse failed, attempting fixes...")
+            fixed = _fix_common_json_errors(raw)
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError as exc:
+                logger.error(
+                    "Failed to parse LLM JSON response after fixes. "
+                    "Error: %s. Position %d. Raw (first 500 chars): %s",
+                    exc, exc.pos, raw[:500],
+                )
+                raise

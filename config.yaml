@@ -7,11 +7,11 @@ llm:
   no_proxy: true
 
 pipeline:
-  batch_size: 20
+  batch_size: 30
   num_scenarios_min: 5
   num_scenarios_max: 10
   random_seed: 42
-  classification_batch_size: 20
+  classification_batch_size: 40
 
 paths:
   data_dir: "./data"
