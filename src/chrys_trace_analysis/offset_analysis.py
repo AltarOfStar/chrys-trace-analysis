@@ -93,6 +93,19 @@ Guidelines:
 Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
 Output ONLY valid JSON (no markdown, no extra text)."""
 
+CONDENSE_SECOND_PROMPT = """You are an expert at the FINAL refinement of categorization. You will receive a set of deviation categories that have already gone through one round of condensation — but there may still be categories that are essentially the same, just expressed with slightly different wording.
+
+Your task is a rigorous second-pass merge:
+- If two categories describe the same root cause with only superficial wording differences, MERGE them into one
+- Be aggressive about merging — categories that differ only in nuance or phrasing should be combined
+- For each merged category, write a description that captures BOTH the common theme and the specific variations
+- Re-assign all session_uuids — every session must appear in exactly one final category
+- Aim for 2-5 categories as the FINAL result (fewer, broader categories are better than many narrow ones)
+- If the first round produced 5+ categories, you MUST reduce to 5 or fewer
+
+Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
+Output ONLY valid JSON (no markdown, no extra text)."""
+
 # ---------------------------------------------------------------------------
 # Session formatting (same format as scenario.py)
 # ---------------------------------------------------------------------------
@@ -330,13 +343,22 @@ def _format_categories_for_condense(
     return "\n\n".join(parts)
 
 
+def _format_deviation_categories(categories: list[DeviationCategory]) -> str:
+    """Format DeviationCategory list for the second condensation pass."""
+    lines = [f"## Categories after first condensation ({len(categories)} total)"]
+    for cat in categories:
+        lines.append(f"- **{cat.category_name}** ({cat.session_count} sessions): {cat.description}")
+        lines.append(f"  Sessions: {', '.join(cat.session_uuids)}")
+    return "\n".join(lines)
+
+
 def _condense_categories(
     client: LLMClient,
     batch_results: list[list[dict]],
 ) -> list[DeviationCategory]:
-    """Final LLM condensation pass — always merges into representative categories."""
+    """Two-round LLM condensation to merge near-identical categories into representative set."""
+    # Round 1: initial condensation
     formatted = _format_categories_for_condense(batch_results)
-
     user_prompt = f"""Below are deviation categories identified from coding agent conversation analysis.
 
 Review them and condense into a small, representative set of root-cause categories.
@@ -348,13 +370,40 @@ Output ONLY valid JSON (no markdown, no extra text):
     try:
         raw = client.chat_json(CONDENSE_SYSTEM_PROMPT, user_prompt)
     except Exception as exc:
-        logger.error("Final condensation failed: %s. Falling back to raw categories.", exc)
+        logger.error("Round 1 condensation failed: %s. Falling back to raw categories.", exc)
         all_categories: list[DeviationCategory] = []
         for batch_raw in batch_results:
             all_categories.extend(_parse_categories(batch_raw))
         return all_categories
 
-    return _parse_categories(raw)
+    round1 = _parse_categories(raw)
+    logger.info("Round 1 condensed to %d categories: %s",
+                len(round1), [c.category_name for c in round1])
+
+    # Round 2: aggressive merge of near-identical categories
+    if len(round1) <= 2:
+        logger.info("Only %d categories after round 1, skipping round 2.", len(round1))
+        return round1
+
+    formatted2 = _format_deviation_categories(round1)
+    user_prompt2 = f"""Below are deviation categories after a first round of condensation. Some may still be near-duplicates with different wording.
+
+Merge them aggressively into the FINAL set of root-cause categories.
+
+Output ONLY valid JSON (no markdown, no extra text):
+
+{formatted2}"""
+
+    try:
+        raw2 = client.chat_json(CONDENSE_SECOND_PROMPT, user_prompt2)
+    except Exception as exc:
+        logger.error("Round 2 condensation failed: %s. Returning round 1 results.", exc)
+        return round1
+
+    round2 = _parse_categories(raw2)
+    logger.info("Round 2 condensed to %d categories: %s",
+                len(round2), [c.category_name for c in round2])
+    return round2
 
 
 def categorize_deviations(
