@@ -20,6 +20,24 @@ logger = logging.getLogger(__name__)
 _BAR_WIDTH = 40
 _MAX_RETRIES = 3
 
+# Keywords that indicate a session was judged as NOT deviated but still output by LLM
+_NON_DEVIATION_PATTERNS = [
+    "无显著偏离", "无明显偏离", "无明显偏移", "未发生偏离", "未发生偏移",
+    "无明显问题", "无偏移", "无偏离", "正常会话", "正常交互", "正常对话",
+    "符合预期", "没有偏离", "未偏离", "无问题", "暂无偏离",
+    "no deviation", "normal", "no issue",
+]
+
+
+def _is_non_deviation_reason(reason: str) -> bool:
+    """Check if a deviation_reason from the LLM actually indicates NO deviation."""
+    reason_lower = reason.lower().strip()
+    for pattern in _NON_DEVIATION_PATTERNS:
+        if pattern.lower() in reason_lower:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -34,7 +52,9 @@ For each trajectory, determine whether the agent's execution **deviated from the
 
 For each session that shows deviation, provide the session UUID and a concise reason (in Chinese) explaining what went wrong and why.
 
-Output a JSON array containing ONLY the deviated sessions. Each element must have:
+IMPORTANT: Output a JSON array containing ONLY the deviated sessions. Do NOT output entries for sessions that are normal or have no deviation — simply exclude them. Do NOT output entries with reasons like "无显著偏离", "正常会话", "无明显问题", "未发生偏离" etc. If a session is normal, omit it.
+
+Output a JSON array. Each element must have:
 - "session_uuid": the session UUID
 - "deviation_reason": a concise explanation of the deviation (in Chinese)
 
@@ -58,18 +78,17 @@ Guidelines:
 Output a JSON array of category objects.
 Output ONLY valid JSON (no markdown, no extra text)."""
 
-AGGREGATION_SYSTEM_PROMPT = """You are an expert at synthesizing categorization results. You will receive deviation category results from multiple independent batches of coding agent conversation trajectories.
+CONDENSE_SYSTEM_PROMPT = """You are an expert at synthesizing and condensing categorization results. You will receive deviation category data from analysis of coding agent conversation trajectories.
 
-Each batch was analyzed independently and produced its own set of deviation categories.
-
-Your task is to synthesize ALL of these results into a single, consolidated set of deviation categories.
+Your task is to review these categories and condense them into a **small, representative set** of root-cause categories. Think of this as a final refinement pass — the goal is to produce the most meaningful, high-level taxonomy of deviation patterns.
 
 Guidelines:
-- Merge similar categories across batches (e.g. "需求理解错误" and "误解用户意图" should be unified)
-- Keep categories that appear consistently across batches; consider dropping outliers that only appear in one batch with very few sessions
-- For each final category, write a comprehensive description that captures the consensus
-- Re-assign all session_uuids to the correct merged category
-- The final set should be coherent, non-overlapping, and cover all deviation patterns
+- Merge similar or overlapping categories into broader, more representative ones
+- Each final category should be distinct and meaningful — avoid categories that are too narrow or too vague
+- For each final category, write a comprehensive, well-crafted description that captures the essence of all merged sub-categories
+- Re-assign all session_uuids to the correct merged category — every session must appear in exactly one category
+- Aim for 3-7 categories as the final condensed set (fewer is better if they remain representative)
+- The final set must be mutually exclusive and collectively exhaustive
 
 Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
 Output ONLY valid JSON (no markdown, no extra text)."""
@@ -181,6 +200,11 @@ Output ONLY valid JSON (no markdown, no extra text):
         try:
             results: list[DeviatedSession] = []
             for item in raw:
+                reason = item.get("deviation_reason", "")
+                if _is_non_deviation_reason(reason):
+                    logger.debug("Filtered non-deviation result: session=%s reason=%s",
+                                 item.get("session_uuid", ""), reason)
+                    continue
                 item["user_name"] = uuid_to_user.get(item.get("session_uuid", ""), "")
                 ds = DeviatedSession.model_validate(item)
                 results.append(ds)
@@ -282,17 +306,55 @@ def _parse_categories(raw: list[dict]) -> list[DeviationCategory]:
     return categories
 
 
-def _format_batch_categories(batch_results: list[list[dict]], batch_offset: int) -> str:
-    """Format all batch categorization results for aggregation."""
+def _format_categories_for_condense(
+    batch_results: list[list[dict]],
+) -> str:
+    """Format all batch categorization results for the final condensation pass."""
     parts: list[str] = []
-    for i, categories in enumerate(batch_results, 1):
-        lines = [f"## Batch {batch_offset + i} results ({len(categories)} categories)"]
-        for cat in categories:
+    if len(batch_results) == 1:
+        # Single batch: present as a flat list of categories
+        lines = [f"## Initial categories ({len(batch_results[0])} total)"]
+        for cat in batch_results[0]:
             lines.append(f"- **{cat.get('category_name', '')}**: {cat.get('description', '')}")
             uuids = cat.get("session_uuids", [])
             lines.append(f"  Sessions ({len(uuids)}): {', '.join(uuids)}")
         parts.append("\n".join(lines))
+    else:
+        for i, categories in enumerate(batch_results, 1):
+            lines = [f"## Batch {i} categories ({len(categories)} total)"]
+            for cat in categories:
+                lines.append(f"- **{cat.get('category_name', '')}**: {cat.get('description', '')}")
+                uuids = cat.get("session_uuids", [])
+                lines.append(f"  Sessions ({len(uuids)}): {', '.join(uuids)}")
+            parts.append("\n".join(lines))
     return "\n\n".join(parts)
+
+
+def _condense_categories(
+    client: LLMClient,
+    batch_results: list[list[dict]],
+) -> list[DeviationCategory]:
+    """Final LLM condensation pass — always merges into representative categories."""
+    formatted = _format_categories_for_condense(batch_results)
+
+    user_prompt = f"""Below are deviation categories identified from coding agent conversation analysis.
+
+Review them and condense into a small, representative set of root-cause categories.
+
+Output ONLY valid JSON (no markdown, no extra text):
+
+{formatted}"""
+
+    try:
+        raw = client.chat_json(CONDENSE_SYSTEM_PROMPT, user_prompt)
+    except Exception as exc:
+        logger.error("Final condensation failed: %s. Falling back to raw categories.", exc)
+        all_categories: list[DeviationCategory] = []
+        for batch_raw in batch_results:
+            all_categories.extend(_parse_categories(batch_raw))
+        return all_categories
+
+    return _parse_categories(raw)
 
 
 def categorize_deviations(
@@ -301,7 +363,7 @@ def categorize_deviations(
     all_sessions: list[tuple[str, Session]],
     batch_size: int,
 ) -> list[DeviationCategory]:
-    """Step 2: Categorize deviation causes, with batching and aggregation if needed."""
+    """Step 2: Categorize deviation causes, then always condense into representative categories via LLM."""
     if not deviated:
         logger.info("No deviated sessions to categorize.")
         return []
@@ -314,14 +376,7 @@ def categorize_deviations(
     total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
     logger.info("Deviation categorization: %d sessions in %d batches", total, total_batches)
 
-    if total_batches == 1:
-        raw = _categorize_deviations_batch(client, deviated, sessions_map, batch_num=1)
-        if raw is None:
-            logger.warning("Categorization failed, returning empty result.")
-            return []
-        return _parse_categories(raw)
-
-    # Multi-batch: categorize each batch, then aggregate
+    # Phase A: Categorize (batched if needed)
     all_batch_results: list[list[dict]] = []
     for batch_num, start in enumerate(range(0, total, batch_size), 1):
         batch = deviated[start:start + batch_size]
@@ -335,32 +390,10 @@ def categorize_deviations(
         logger.warning("All categorization batches failed.")
         return []
 
-    if len(all_batch_results) == 1:
-        return _parse_categories(all_batch_results[0])
-
-    # Aggregate
-    logger.info("Aggregating categories from %d batches...", len(all_batch_results))
-    formatted = _format_batch_categories(all_batch_results, batch_offset=0)
-
-    user_prompt = f"""Below are deviation categorization results from {len(all_batch_results)} independent batches.
-
-Synthesize them into a consolidated set of categories.
-
-Output ONLY valid JSON (no markdown, no extra text):
-
-{formatted}"""
-
-    try:
-        raw = client.chat_json(AGGREGATION_SYSTEM_PROMPT, user_prompt)
-    except Exception as exc:
-        logger.error("Aggregation failed: %s. Returning raw batch results.", exc)
-        # Fallback: merge all batch results as-is
-        all_categories: list[DeviationCategory] = []
-        for batch_raw in all_batch_results:
-            all_categories.extend(_parse_categories(batch_raw))
-        return all_categories
-
-    return _parse_categories(raw)
+    # Phase B: Always condense into representative categories
+    logger.info("Condensing %d batch results into representative categories...",
+                len(all_batch_results))
+    return _condense_categories(client, all_batch_results)
 
 
 # ---------------------------------------------------------------------------
