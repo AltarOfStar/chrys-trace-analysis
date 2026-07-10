@@ -26,6 +26,12 @@ class PipelineConfig(BaseModel):
     classification_batch_size: int = 50
 
 
+class OffsetPipelineConfig(BaseModel):
+    detection_batch_size: int = 30
+    categorization_batch_size: int = 30
+    random_seed: int | None = 42
+
+
 class PathsConfig(BaseModel):
     data_dir: Path
     output_dir: Path
@@ -34,6 +40,7 @@ class PathsConfig(BaseModel):
 class Config(BaseModel):
     llm: LLMConfig
     pipeline: PipelineConfig
+    offset_pipeline: OffsetPipelineConfig = OffsetPipelineConfig()
     paths: PathsConfig
 
 

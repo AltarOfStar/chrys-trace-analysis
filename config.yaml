@@ -14,6 +14,11 @@ pipeline:
   random_seed: 42
   classification_batch_size: 40
 
+offset_pipeline:
+  detection_batch_size: 30
+  categorization_batch_size: 30
+  random_seed: 42
+
 paths:
   data_dir: "./data"
   output_dir: "./output"

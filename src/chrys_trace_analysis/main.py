@@ -1,26 +1,49 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import sys
 
 from chrys_trace_analysis.config import load_config
-from chrys_trace_analysis.pipeline import run
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Chrys Trace Analysis")
+    parser.add_argument(
+        "--pipeline",
+        choices=["scenario", "offset"],
+        default="scenario",
+        help="Which pipeline to run (default: scenario)",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to config file (default: config.yaml)",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,
     )
 
-    config = load_config("config.yaml")
+    config = load_config(args.config)
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = run(config)
+    if args.pipeline == "offset":
+        from chrys_trace_analysis.offset_analysis import run_offset
 
-    output_path = config.paths.output_dir / "analysis_result.json"
+        result = run_offset(config)
+        output_path = config.paths.output_dir / "offset_analysis" / "offset_analysis_result.json"
+    else:
+        from chrys_trace_analysis.pipeline import run
+
+        result = run(config)
+        output_path = config.paths.output_dir / "analysis_result.json"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(result.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",

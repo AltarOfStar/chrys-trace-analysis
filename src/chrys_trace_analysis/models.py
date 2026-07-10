@@ -41,3 +41,25 @@ class AnalysisResult(BaseModel):
     scenarios: list[Scenario]
     classified_sessions: list[ClassifiedSession]
     summary: dict
+
+
+class DeviatedSession(BaseModel):
+    """A session where agent execution deviated from user intent."""
+    session_uuid: str
+    user_name: str
+    deviation_reason: str
+
+
+class DeviationCategory(BaseModel):
+    """A category of deviation root causes."""
+    category_name: str
+    description: str
+    session_count: int
+    session_uuids: list[str]
+
+
+class OffsetAnalysisResult(BaseModel):
+    """Result of the offset analysis pipeline."""
+    deviated_sessions: list[DeviatedSession]
+    categories: list[DeviationCategory]
+    summary: dict
