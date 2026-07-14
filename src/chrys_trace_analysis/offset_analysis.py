@@ -126,7 +126,7 @@ Guidelines:
 - Each final category should be distinct and meaningful — avoid categories that are too narrow or too vague
 - For each final category, write a comprehensive, well-crafted description that captures the essence of all merged sub-categories
 - Re-assign all session_uuids to the correct merged category — every session must appear in exactly one category
-- Aim for 3-7 categories as the final condensed set (fewer is better if they remain representative)
+- You MUST produce 4 to 6 categories. If you have more, merge aggressively. If you have fewer, split one broad category.
 - The final set must be mutually exclusive and collectively exhaustive
 
 Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
@@ -139,8 +139,8 @@ Your task is a rigorous second-pass merge:
 - Be aggressive about merging — categories that differ only in nuance or phrasing should be combined
 - For each merged category, write a description that captures BOTH the common theme and the specific variations
 - Re-assign all session_uuids — every session must appear in exactly one final category
-- Aim for 2-5 categories as the FINAL result (fewer, broader categories are better than many narrow ones)
-- If the first round produced 5+ categories, you MUST reduce to 5 or fewer
+- You MUST produce exactly 4 to 6 categories as the FINAL result. If you have more than 6, merge the least populated ones together. If you have fewer than 4, split the largest one.
+- No category should have only 1 session — merge singletons into the nearest broader category
 
 Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
 Output ONLY valid JSON (no markdown, no extra text)."""
@@ -549,67 +549,58 @@ def categorize_deviations(
 # ---------------------------------------------------------------------------
 
 
-def _analyze_turn_batch(
+def _analyze_single_turn(
     client: LLMClient,
-    batch: list[tuple[DeviatedSession, SessionTurn]],
-    batch_num: int,
+    ds: DeviatedSession,
+    turn: SessionTurn,
+    index: int,
+    total: int,
     retries: int = _MAX_RETRIES,
-) -> list[TurnProblem] | None:
-    """Analyze a batch of problematic turns, returning detailed TurnProblem results."""
-    for attempt in range(1, retries + 1):
-        try:
-            formatted_turns: list[str] = []
-            for ds, turn in batch:
-                formatted_turns.append(_format_turn_for_analysis(ds, turn))
+) -> TurnProblem | None:
+    """Analyze a single problematic turn, one LLM call per turn."""
+    formatted = _format_turn_for_analysis(ds, turn)
+    user_prompt = f"""Below is a problematic conversational turn from a session where the agent deviated from user intent.
 
-            user_prompt = f"""Below are {len(batch)} problematic conversational turns from sessions where the agent deviated from user intent.
-
-For each turn, analyze the raw messages in detail and identify:
+Analyze the raw messages in detail and identify:
 - Which specific messages (by their 1-indexed position) are problematic
 - What exactly went wrong and why
 
-Output a JSON array where each element corresponds to the turns in order. Each element must have:
-- "session_uuid": the session UUID (matching the input)
-- "turn_index": the turn index (matching the input)
+Output a JSON object:
+- "session_uuid": "{ds.session_uuid}"
+- "turn_index": {turn.turn_index}
 - "problematic_message_indices": array of 1-indexed message positions that are problematic
 - "turn_analysis": detailed analysis string in Chinese
 
 Output ONLY valid JSON (no markdown, no extra text):
 
-{chr(10).join(f'--- Turn {i+1} ---{chr(10)}{ft}' for i, ft in enumerate(formatted_turns))}"""
+{formatted}"""
 
+    for attempt in range(1, retries + 1):
+        try:
             raw = client.chat_json(TURN_ANALYSIS_SYSTEM_PROMPT, user_prompt)
-            results: list[TurnProblem] = []
-            for item in raw:
-                tp = TurnProblem.model_validate(item)
-                # Enrich with user_name from the batch
-                for ds, _ in batch:
-                    if ds.session_uuid == tp.session_uuid:
-                        tp.user_name = ds.user_name
-                        break
-                results.append(tp)
-            return results
+            tp = TurnProblem.model_validate(raw)
+            tp.user_name = ds.user_name
+            return tp
         except (ReadTimeout, openai.APITimeoutError) as exc:
             logger.warning(
-                "Turn analysis batch %d timed out (attempt %d/%d): %s",
-                batch_num, attempt, retries, exc,
+                "Turn analysis %d/%d timed out (attempt %d/%d): %s",
+                index, total, attempt, retries, exc,
             )
             continue
         except Exception as exc:
             logger.warning(
-                "Turn analysis batch %d failed (attempt %d/%d): %s",
-                batch_num, attempt, retries, exc,
+                "Turn analysis %d/%d failed (attempt %d/%d): %s",
+                index, total, attempt, retries, exc,
             )
             continue
 
-    logger.error("Turn analysis batch %d failed after %d retries.", batch_num, retries)
+    logger.error("Turn analysis %d/%d failed after %d retries.", index, total, retries)
     return None
 
 
 def analyze_turn_deviations(
     client: LLMClient,
     deviated: list[DeviatedSession],
-    batch_size: int,
 ) -> list[tuple[SessionTurn, TurnProblem]]:
     """Step 3: For each deviated session with a problematic turn, fetch full session
     JSON via HTTP API, parse turns, and run LLM analysis on the target turn's messages.
@@ -671,22 +662,17 @@ def analyze_turn_deviations(
         return []
 
     total = len(analysis_pairs)
-    total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
-    logger.info("Turn analysis: %d turns in %d batches", total, total_batches)
+    logger.info("Turn analysis: %d turns to analyze (one turn per LLM call)", total)
 
     results: list[tuple[SessionTurn, TurnProblem]] = []
-    for batch_num, start in enumerate(range(0, total, batch_size), 1):
-        batch = analysis_pairs[start:start + batch_size]
-        processed_so_far = min(start + batch_size, total)
-        message = _render_progress(processed_so_far, total, batch_num, total_batches)
+    for i, (ds, turn) in enumerate(analysis_pairs, 1):
+        message = _render_progress(i, total, i, total)
         sys.stderr.write(message)
         sys.stderr.flush()
 
-        batch_results = _analyze_turn_batch(client, batch, batch_num)
-        if batch_results is not None:
-            # Match batch_results (same order) back to (ds, turn) pairs
-            for (ds, turn), tp in zip(batch, batch_results):
-                results.append((turn, tp))
+        tp = _analyze_single_turn(client, ds, turn, index=i, total=total)
+        if tp is not None:
+            results.append((turn, tp))
 
     sys.stderr.write("\n")
     sys.stderr.flush()
@@ -756,10 +742,9 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
         logger.info("Loaded %d categories from %s (step 2 skipped)",
                     len(categories), categories_file)
 
-    # Step 3: Turn-level detailed analysis via HTTP API
+    # Step 3: Turn-level detailed analysis via HTTP API (one turn per LLM call)
     turn_results = analyze_turn_deviations(
         client, deviated,
-        config.offset_pipeline.detection_batch_size,
     )
 
     # Save aggregate turn_problems.json
