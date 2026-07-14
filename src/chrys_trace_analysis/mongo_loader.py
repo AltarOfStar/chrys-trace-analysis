@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import MongoConfig
-from .models import Session, SessionRound, UserData
+from .models import MessageContent, RawMessage, Session, SessionRound, SessionTurn, UserData
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def _build_user_to_groups(groups: list[dict]) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Session abstract construction
+# Raw message parsing
 # ---------------------------------------------------------------------------
 
 
@@ -68,6 +68,46 @@ def _extract_texts(item: dict) -> list[str]:
         if fallback:
             texts.append(fallback)
     return texts
+
+
+def _parse_message_content(content_dict: dict) -> MessageContent:
+    """Parse a single content block into MessageContent."""
+    return MessageContent(
+        type=content_dict.get("type", ""),
+        text=content_dict.get("text", ""),
+        tool_name=content_dict.get("tool_name", ""),
+        call_id=content_dict.get("call_id", ""),
+        name=content_dict.get("name", ""),
+        arguments=json.dumps(content_dict.get("arguments", {}), ensure_ascii=False)
+            if isinstance(content_dict.get("arguments"), dict) else str(content_dict.get("arguments", "")),
+        result=json.dumps(content_dict.get("result", {}), ensure_ascii=False)
+            if isinstance(content_dict.get("result"), dict) else str(content_dict.get("result", "")),
+    )
+
+
+def _parse_raw_message(msg_dict: dict) -> RawMessage:
+    """Parse a raw MongoDB message dict into RawMessage."""
+    contents: list[MessageContent] = []
+    raw_contents = msg_dict.get("contents", [])
+    if isinstance(raw_contents, list):
+        for c in raw_contents:
+            if isinstance(c, dict):
+                contents.append(_parse_message_content(c))
+
+    addl = msg_dict.get("additional_properties")
+    additional_properties = dict(addl) if isinstance(addl, dict) else {}
+
+    return RawMessage(
+        role=msg_dict.get("role", ""),
+        contents=contents,
+        additional_properties=additional_properties,
+        message_id=msg_dict.get("message_id", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Session abstract construction
+# ---------------------------------------------------------------------------
 
 
 def build_session_abstract(messages: list[dict]) -> list[SessionRound]:
@@ -127,6 +167,45 @@ def build_session_abstract(messages: list[dict]) -> list[SessionRound]:
             abstract.append(SessionRound(user_msg=user_msg, assistant_reply=assistant_reply))
 
     return abstract
+
+
+def build_session_turns(messages: list[dict]) -> list[SessionTurn]:
+    """遍历 messages，按轮次划分构建 SessionTurn 列表，保留完整原始消息。
+
+    轮次分界：role=assistant 且 additional_properties._chrys_kind="turn" 的消息
+    （该标记消息被丢弃）。
+    返回每个轮次内所有原始消息的列表。
+    """
+    turns: list[SessionTurn] = []
+    if not isinstance(messages, list) or not messages:
+        return turns
+
+    items = [m for m in messages if isinstance(m, dict)]
+    if not items:
+        return turns
+
+    # 按 turn 分界切割块
+    turn_blocks: list[list[dict]] = []
+    current_turn: list[dict] = []
+    for item in items:
+        role = item.get("role", "")
+        if role == "assistant":
+            addl = item.get("additional_properties")
+            if isinstance(addl, dict) and addl.get("_chrys_kind") == "turn":
+                if current_turn:
+                    turn_blocks.append(current_turn)
+                    current_turn = []
+                continue
+        current_turn.append(item)
+
+    if current_turn:
+        turn_blocks.append(current_turn)
+
+    for i, block in enumerate(turn_blocks, 1):
+        raw_messages = [_parse_raw_message(msg) for msg in block]
+        turns.append(SessionTurn(turn_index=i, messages=raw_messages))
+
+    return turns
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +275,12 @@ def mongo_docs_to_user_data(
         for doc in session_docs:
             session_uuid = doc.get("uuid", "")
 
-            # 构建 session_abstract
+            # 构建 session_abstract（简化轮次视图）
             messages = doc.get("messages", [])
             abstract = build_session_abstract(messages)
+
+            # 构建完整 turns（保留所有原始消息）
+            turns = build_session_turns(messages)
 
             # MCP tools
             mcp_tools: list[str] = []
@@ -225,11 +307,20 @@ def mongo_docs_to_user_data(
             if isinstance(mr, dict):
                 total_add_lines += _safe_int(mr.get("add_lines_hits"))
 
+            # Session metadata
+            meta = doc.get("meta", {})
+            if isinstance(meta, dict):
+                meta = dict(meta)
+            else:
+                meta = {}
+
             sessions.append(Session(
                 session_uuid=session_uuid,
                 session_abstract=abstract,
                 mcp_tools=mcp_tools,
                 skills=skills,
+                turns=turns,
+                meta=meta,
             ))
 
         groups = user_to_groups.get(uid, []) if user_to_groups else []

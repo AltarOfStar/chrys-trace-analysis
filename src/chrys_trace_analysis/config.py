@@ -32,6 +32,13 @@ class OffsetPipelineConfig(BaseModel):
     random_seed: int | None = 42
 
 
+class MongoConfig(BaseModel):
+    uri: str
+    database: str = "lingxi"
+    collection: str = "sessions"
+    members_file: str = ""
+
+
 class PathsConfig(BaseModel):
     data_dir: Path
     output_dir: Path

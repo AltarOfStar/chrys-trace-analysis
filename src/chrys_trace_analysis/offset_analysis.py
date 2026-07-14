@@ -12,7 +12,15 @@ from httpx import ReadTimeout
 from .config import Config
 from .loader import load_user_files
 from .llm_client import LLMClient
-from .models import DeviatedSession, DeviationCategory, OffsetAnalysisResult, Session
+from .models import (
+    DeviatedSession,
+    DeviationCategory,
+    OffsetAnalysisResult,
+    RawMessage,
+    Session,
+    SessionTurn,
+    TurnProblem,
+)
 from .sampler import flatten_all_sessions
 
 logger = logging.getLogger(__name__)
@@ -50,13 +58,17 @@ For each trajectory, determine whether the agent's execution **deviated from the
 - Whether the agent went off on a tangent unrelated to the user's request
 - Whether the user expressed frustration or had to repeat themselves
 
-For each session that shows deviation, provide the session UUID and a concise reason (in Chinese) explaining what went wrong and why.
+For each session that shows deviation, provide:
+1. The session UUID
+2. A concise reason (in Chinese) explaining what went wrong and why
+3. The **turn number** (1-indexed) where the problem FIRST appeared or became most pronounced. Look at the conversation turns (numbered in each session) and identify which turn shows the deviation starting. If the deviation spans multiple turns, pick the earliest one.
 
 IMPORTANT: Output a JSON array containing ONLY the deviated sessions. Do NOT output entries for sessions that are normal or have no deviation — simply exclude them. Do NOT output entries with reasons like "无显著偏离", "正常会话", "无明显问题", "未发生偏离" etc. If a session is normal, omit it.
 
 Output a JSON array. Each element must have:
 - "session_uuid": the session UUID
 - "deviation_reason": a concise explanation of the deviation (in Chinese)
+- "problematic_turn_index": the 1-indexed turn number where the deviation first appeared (integer)
 
 If no sessions in the batch show deviation, output an empty JSON array: []
 
@@ -106,8 +118,29 @@ Your task is a rigorous second-pass merge:
 Output a JSON array where each element has "category_name", "description", and "session_uuids" fields.
 Output ONLY valid JSON (no markdown, no extra text)."""
 
+TURN_ANALYSIS_SYSTEM_PROMPT = """You are an expert at diagnosing coding agent failures at the individual turn level. You will be given a specific conversational turn from a session where the agent deviated from user intent, along with the deviation reason.
+
+The turn contains the FULL raw messages including:
+- User messages (what the user asked)
+- Assistant text replies (what the agent said)
+- Tool call messages (what tools the agent invoked)
+- Tool result messages (what the tools returned)
+
+Your task is to analyze this turn in detail and identify:
+1. **Which specific messages within the turn are problematic** — refer to them by their 1-indexed position within the turn (e.g., "message 3: the agent called read_file with the wrong path")
+2. **What exactly went wrong** — be specific about the error, misunderstanding, or misstep
+3. **Why it happened** — what was the root cause at the message level (e.g., the agent ignored a constraint the user specified, the agent assumed a wrong file path, the agent called a tool with incorrect arguments, etc.)
+
+Focus on actionable, precise observations. Do not restate the overall deviation reason — dig into the specific messages.
+
+Output a JSON object:
+- "problematic_message_indices": array of 1-indexed message position numbers within the turn that are problematic
+- "turn_analysis": detailed analysis string in Chinese explaining what went wrong and why
+
+Output ONLY valid JSON (no markdown, no extra text)."""
+
 # ---------------------------------------------------------------------------
-# Session formatting (same format as scenario.py)
+# Session formatting
 # ---------------------------------------------------------------------------
 
 
@@ -122,6 +155,7 @@ def _format_sessions(sessions: list[tuple[str, Session]]) -> str:
             lines.append(f"Skills: {', '.join(session.skills)}")
         lines.append("")
         for j, round_ in enumerate(session.session_abstract, 1):
+            lines.append(f"### Turn {j}")
             lines.append(f"**User:** {round_.user_msg}")
             lines.append(f"**Assistant:** {round_.assistant_reply}")
             lines.append("")
@@ -151,19 +185,56 @@ def _format_deviations_for_categorization(
                 f"Session UUID: {ds.session_uuid}",
                 f"User: {user_name}",
                 f"Deviation Reason: {ds.deviation_reason}",
+                f"Problematic Turn: {ds.problematic_turn_index}",
                 "",
                 "### Conversation:",
             ]
             for j, round_ in enumerate(session.session_abstract, 1):
-                lines.append(f"**User:** {round_.user_msg}")
-                lines.append(f"**Assistant:** {round_.assistant_reply}")
+                lines.append(f"**Turn {j} - User:** {round_.user_msg}")
+                lines.append(f"**Turn {j} - Assistant:** {round_.assistant_reply}")
                 lines.append("")
         parts.append("\n".join(lines))
     return "\n---\n".join(parts)
 
 
+def _format_raw_message(msg: RawMessage, index: int) -> str:
+    """Format a single raw message for turn-level analysis."""
+    role_label = {"user": "User", "assistant": "Assistant", "system": "System", "tool": "Tool"}
+    role_display = role_label.get(msg.role, msg.role.capitalize())
+
+    parts = [f"[{index}] **{role_display}**:"]
+    for c in msg.contents:
+        if c.type == "text" and c.text:
+            parts.append(f"  text: {c.text}")
+        elif c.type in ("function_call", "shell_tool_call", "mcp_server_tool_call"):
+            parts.append(f"  tool_call → {c.tool_name}({c.arguments})")
+        elif c.type in ("function_result", "shell_tool_result", "mcp_server_tool_result"):
+            truncated = c.result[:500] + "..." if len(c.result) > 500 else c.result
+            parts.append(f"  tool_result: {truncated}")
+        elif c.type == "error":
+            parts.append(f"  error: {c.text}")
+    return "\n".join(parts)
+
+
+def _format_turn_for_analysis(
+    ds: DeviatedSession,
+    turn: SessionTurn,
+) -> str:
+    """Format a single turn's raw messages for LLM analysis."""
+    lines = [
+        f"Session UUID: {ds.session_uuid}",
+        f"User: {ds.user_name}",
+        f"Deviation Reason: {ds.deviation_reason}",
+        f"Turn {turn.turn_index} ({len(turn.messages)} messages):",
+        "",
+    ]
+    for i, msg in enumerate(turn.messages, 1):
+        lines.append(_format_raw_message(msg, i))
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
-# Progress bar (same as classifier.py)
+# Progress bar
 # ---------------------------------------------------------------------------
 
 
@@ -191,6 +262,7 @@ def _detect_deviations_batch(
             user_prompt = f"""Below are {len(batch)} coding agent conversation trajectories.
 
 Analyze each trajectory and output a JSON array of sessions that show agent deviation from user intent.
+For each deviated session, include the turn number where the problem first appears.
 
 Output ONLY valid JSON (no markdown, no extra text):
 
@@ -429,7 +501,7 @@ def categorize_deviations(
     all_batch_results: list[list[dict]] = []
     for batch_num, start in enumerate(range(0, total, batch_size), 1):
         batch = deviated[start:start + batch_size]
-        logger.info("Categorizing batch %d/%d (%d sessions)...",
+        logger.info("Categorizing batch %d/%d (%d sessions)",
                     batch_num, total_batches, len(batch))
         raw = _categorize_deviations_batch(client, batch, sessions_map, batch_num)
         if raw is not None:
@@ -443,6 +515,147 @@ def categorize_deviations(
     logger.info("Condensing %d batch results into representative categories...",
                 len(all_batch_results))
     return _condense_categories(client, all_batch_results)
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Turn-level detailed analysis
+# ---------------------------------------------------------------------------
+
+
+def _analyze_turn_batch(
+    client: LLMClient,
+    batch: list[tuple[DeviatedSession, SessionTurn]],
+    batch_num: int,
+    retries: int = _MAX_RETRIES,
+) -> list[TurnProblem] | None:
+    """Analyze a batch of problematic turns, returning detailed TurnProblem results."""
+    for attempt in range(1, retries + 1):
+        try:
+            formatted_turns: list[str] = []
+            for ds, turn in batch:
+                formatted_turns.append(_format_turn_for_analysis(ds, turn))
+
+            user_prompt = f"""Below are {len(batch)} problematic conversational turns from sessions where the agent deviated from user intent.
+
+For each turn, analyze the raw messages in detail and identify:
+- Which specific messages (by their 1-indexed position) are problematic
+- What exactly went wrong and why
+
+Output a JSON array where each element corresponds to the turns in order. Each element must have:
+- "session_uuid": the session UUID (matching the input)
+- "turn_index": the turn index (matching the input)
+- "problematic_message_indices": array of 1-indexed message positions that are problematic
+- "turn_analysis": detailed analysis string in Chinese
+
+Output ONLY valid JSON (no markdown, no extra text):
+
+{chr(10).join(f'--- Turn {i+1} ---{chr(10)}{ft}' for i, ft in enumerate(formatted_turns))}"""
+
+            raw = client.chat_json(TURN_ANALYSIS_SYSTEM_PROMPT, user_prompt)
+            results: list[TurnProblem] = []
+            for item in raw:
+                tp = TurnProblem.model_validate(item)
+                # Enrich with user_name from the batch
+                for ds, _ in batch:
+                    if ds.session_uuid == tp.session_uuid:
+                        tp.user_name = ds.user_name
+                        break
+                results.append(tp)
+            return results
+        except (ReadTimeout, openai.APITimeoutError) as exc:
+            logger.warning(
+                "Turn analysis batch %d timed out (attempt %d/%d): %s",
+                batch_num, attempt, retries, exc,
+            )
+            continue
+        except Exception as exc:
+            logger.warning(
+                "Turn analysis batch %d failed (attempt %d/%d): %s",
+                batch_num, attempt, retries, exc,
+            )
+            continue
+
+    logger.error("Turn analysis batch %d failed after %d retries.", batch_num, retries)
+    return None
+
+
+def analyze_turn_deviations(
+    client: LLMClient,
+    deviated: list[DeviatedSession],
+    all_sessions: list[tuple[str, Session]],
+    batch_size: int,
+) -> list[TurnProblem]:
+    """Step 3: For each deviated session with a problematic turn, analyze the turn's raw messages in detail."""
+    if not deviated:
+        logger.info("No deviated sessions to analyze at turn level.")
+        return []
+
+    # Build lookup: session_uuid -> Session
+    sessions_map: dict[str, Session] = {s.session_uuid: s for _, s in all_sessions}
+
+    # Collect (DeviatedSession, SessionTurn) pairs for sessions that have
+    # a problematic_turn_index AND have turn data available
+    analysis_pairs: list[tuple[DeviatedSession, SessionTurn]] = []
+    skipped_no_index = 0
+    skipped_no_turn = 0
+    skipped_no_data = 0
+
+    for ds in deviated:
+        session = sessions_map.get(ds.session_uuid)
+        if session is None:
+            skipped_no_data += 1
+            continue
+
+        if ds.problematic_turn_index is None:
+            skipped_no_index += 1
+            continue
+
+        # Find the matching turn
+        target_turn = None
+        for turn in session.turns:
+            if turn.turn_index == ds.problematic_turn_index:
+                target_turn = turn
+                break
+
+        if target_turn is None:
+            skipped_no_turn += 1
+            logger.debug(
+                "Session %s: problematic_turn_index=%d but turn not found in %d turns",
+                ds.session_uuid, ds.problematic_turn_index, len(session.turns),
+            )
+            continue
+
+        analysis_pairs.append((ds, target_turn))
+
+    logger.info(
+        "Turn analysis: %d pairs collected (%d skipped: no index, %d skipped: no turn, %d skipped: no data)",
+        len(analysis_pairs), skipped_no_index, skipped_no_turn, skipped_no_data,
+    )
+
+    if not analysis_pairs:
+        return []
+
+    total = len(analysis_pairs)
+    total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
+    logger.info("Turn analysis: %d turns in %d batches", total, total_batches)
+
+    results: list[TurnProblem] = []
+    for batch_num, start in enumerate(range(0, total, batch_size), 1):
+        batch = analysis_pairs[start:start + batch_size]
+        processed_so_far = min(start + batch_size, total)
+        message = _render_progress(processed_so_far, total, batch_num, total_batches)
+        sys.stderr.write(message)
+        sys.stderr.flush()
+
+        batch_results = _analyze_turn_batch(client, batch, batch_num)
+        if batch_results is not None:
+            results.extend(batch_results)
+
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+
+    logger.info("Turn analysis complete: %d turn problems analyzed", len(results))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +673,7 @@ def run_offset(config: Config) -> OffsetAnalysisResult:
 
     client = LLMClient(config.llm)
 
-    # Step 1: Deviation detection
+    # Step 1: Deviation detection (now also identifies problematic turn)
     deviated = detect_deviations(
         client, all_sessions, config.offset_pipeline.detection_batch_size,
     )
@@ -481,10 +694,26 @@ def run_offset(config: Config) -> OffsetAnalysisResult:
         config.offset_pipeline.categorization_batch_size,
     )
 
+    # Step 3: Turn-level detailed analysis
+    turn_problems = analyze_turn_deviations(
+        client, deviated, all_sessions,
+        config.offset_pipeline.detection_batch_size,
+    )
+
+    # Save turn analysis results
+    (offset_dir / "turn_problems.json").write_text(
+        json.dumps([tp.model_dump() for tp in turn_problems], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Saved %d turn problems to %s", len(turn_problems),
+                offset_dir / "turn_problems.json")
+
     # Build summary
     category_counter = Counter()
     for cat in categories:
         category_counter[cat.category_name] = cat.session_count
+
+    sessions_with_turn_index = sum(1 for ds in deviated if ds.problematic_turn_index is not None)
 
     summary = {
         "total_users": len(users),
@@ -493,10 +722,13 @@ def run_offset(config: Config) -> OffsetAnalysisResult:
         "deviation_rate": f"{len(deviated) / len(all_sessions) * 100:.1f}%" if all_sessions else "0%",
         "categories_count": len(categories),
         "per_category_distribution": dict(category_counter),
+        "sessions_with_problematic_turn": sessions_with_turn_index,
+        "turn_problems_analyzed": len(turn_problems),
     }
 
     return OffsetAnalysisResult(
         deviated_sessions=deviated,
         categories=categories,
         summary=summary,
+        turn_problems=turn_problems,
     )

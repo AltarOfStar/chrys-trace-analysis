@@ -3,6 +3,36 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+# ---------------------------------------------------------------------------
+# Raw message models (mirror MongoDB session document structure)
+# ---------------------------------------------------------------------------
+
+
+class MessageContent(BaseModel):
+    """A single content block within a raw message (text, tool_call, tool_result, etc.)."""
+    type: str = ""
+    text: str = ""
+    tool_name: str = ""
+    call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+    result: str = ""
+
+
+class RawMessage(BaseModel):
+    """A raw message as stored in MongoDB/chrys session JSON."""
+    role: str  # user, assistant, system, tool
+    contents: list[MessageContent] = []
+    additional_properties: dict = {}
+    message_id: str = ""
+
+
+class SessionTurn(BaseModel):
+    """A full conversational turn containing all raw messages."""
+    turn_index: int
+    messages: list[RawMessage]
+
+
 class SessionRound(BaseModel):
     user_msg: str
     assistant_reply: str
@@ -13,6 +43,10 @@ class Session(BaseModel):
     session_abstract: list[SessionRound]
     mcp_tools: list[str] = []
     skills: list[str] = []
+    # Full turn data with raw messages, for detailed per-turn analysis
+    turns: list[SessionTurn] = []
+    # Session metadata from MongoDB
+    meta: dict = {}
 
 
 class UserData(BaseModel):
@@ -48,6 +82,18 @@ class DeviatedSession(BaseModel):
     session_uuid: str
     user_name: str
     deviation_reason: str
+    problematic_turn_index: int | None = None
+
+
+class TurnProblem(BaseModel):
+    """Detailed analysis of a specific turn's deviation."""
+    session_uuid: str
+    user_name: str
+    turn_index: int
+    # Which messages in the turn are problematic (1-indexed within the turn)
+    problematic_message_indices: list[int] = []
+    # Detailed analysis of what went wrong in this turn
+    turn_analysis: str = ""
 
 
 class DeviationCategory(BaseModel):
@@ -63,3 +109,4 @@ class OffsetAnalysisResult(BaseModel):
     deviated_sessions: list[DeviatedSession]
     categories: list[DeviationCategory]
     summary: dict
+    turn_problems: list[TurnProblem] = []
