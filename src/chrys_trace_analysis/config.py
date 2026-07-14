@@ -48,6 +48,7 @@ class Config(BaseModel):
     llm: LLMConfig
     pipeline: PipelineConfig
     offset_pipeline: OffsetPipelineConfig = OffsetPipelineConfig()
+    mongo: MongoConfig | None = None
     paths: PathsConfig
 
 
