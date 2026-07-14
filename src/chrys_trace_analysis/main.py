@@ -21,6 +21,14 @@ def main() -> None:
         default="config.yaml",
         help="Path to config file (default: config.yaml)",
     )
+    parser.add_argument(
+        "--start-step",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Resume offset pipeline from a specific step "
+             "(1=detection, 2=categorization, 3=turn analysis). Default: 1.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -35,7 +43,7 @@ def main() -> None:
     if args.pipeline == "offset":
         from chrys_trace_analysis.offset_analysis import run_offset
 
-        result = run_offset(config)
+        result = run_offset(config, start_step=args.start_step)
         output_path = config.paths.output_dir / "offset_analysis" / "offset_analysis_result.json"
     else:
         from chrys_trace_analysis.pipeline import run

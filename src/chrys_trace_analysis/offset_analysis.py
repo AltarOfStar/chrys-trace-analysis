@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -21,12 +23,15 @@ from .models import (
     SessionTurn,
     TurnProblem,
 )
+from .mongo_loader import build_session_turns
 from .sampler import flatten_all_sessions
 
 logger = logging.getLogger(__name__)
 
 _BAR_WIDTH = 40
 _MAX_RETRIES = 3
+_API_URL = "http://lingxi-stats.rnd.huawei.com:8042/api/chrys/query/session"
+_FETCH_TIMEOUT = 30
 
 # Keywords that indicate a session was judged as NOT deviated but still output by LLM
 _NON_DEVIATION_PATTERNS = [
@@ -44,6 +49,28 @@ def _is_non_deviation_reason(reason: str) -> bool:
         if pattern.lower() in reason_lower:
             return True
     return False
+
+
+def _fetch_session_json(uuid: str) -> dict | None:
+    """Fetch full session JSON from the HTTP API. Returns parsed dict or None on failure."""
+    payload = json.dumps({
+        "filter_key": "uuid",
+        "filter_value": uuid,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        _API_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to fetch session %s from API: %s", uuid, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -582,37 +609,44 @@ Output ONLY valid JSON (no markdown, no extra text):
 def analyze_turn_deviations(
     client: LLMClient,
     deviated: list[DeviatedSession],
-    all_sessions: list[tuple[str, Session]],
     batch_size: int,
-) -> list[TurnProblem]:
-    """Step 3: For each deviated session with a problematic turn, analyze the turn's raw messages in detail."""
+) -> list[tuple[SessionTurn, TurnProblem]]:
+    """Step 3: For each deviated session with a problematic turn, fetch full session
+    JSON via HTTP API, parse turns, and run LLM analysis on the target turn's messages.
+
+    Returns list of (turn, TurnProblem) tuples for per-session file saving.
+    """
     if not deviated:
         logger.info("No deviated sessions to analyze at turn level.")
         return []
 
-    # Build lookup: session_uuid -> Session
-    sessions_map: dict[str, Session] = {s.session_uuid: s for _, s in all_sessions}
-
-    # Collect (DeviatedSession, SessionTurn) pairs for sessions that have
-    # a problematic_turn_index AND have turn data available
+    # Collect (DeviatedSession, SessionTurn) pairs — fetch from HTTP API
     analysis_pairs: list[tuple[DeviatedSession, SessionTurn]] = []
     skipped_no_index = 0
+    skipped_fetch_failed = 0
     skipped_no_turn = 0
-    skipped_no_data = 0
 
     for ds in deviated:
-        session = sessions_map.get(ds.session_uuid)
-        if session is None:
-            skipped_no_data += 1
-            continue
-
         if ds.problematic_turn_index is None:
             skipped_no_index += 1
             continue
 
+        # Fetch full session JSON from HTTP API
+        doc = _fetch_session_json(ds.session_uuid)
+        if doc is None:
+            skipped_fetch_failed += 1
+            continue
+
+        messages = doc.get("messages", [])
+        if not isinstance(messages, list) or not messages:
+            skipped_fetch_failed += 1
+            continue
+
+        turns = build_session_turns(messages)
+
         # Find the matching turn
         target_turn = None
-        for turn in session.turns:
+        for turn in turns:
             if turn.turn_index == ds.problematic_turn_index:
                 target_turn = turn
                 break
@@ -621,15 +655,16 @@ def analyze_turn_deviations(
             skipped_no_turn += 1
             logger.debug(
                 "Session %s: problematic_turn_index=%d but turn not found in %d turns",
-                ds.session_uuid, ds.problematic_turn_index, len(session.turns),
+                ds.session_uuid, ds.problematic_turn_index, len(turns),
             )
             continue
 
         analysis_pairs.append((ds, target_turn))
 
     logger.info(
-        "Turn analysis: %d pairs collected (%d skipped: no index, %d skipped: no turn, %d skipped: no data)",
-        len(analysis_pairs), skipped_no_index, skipped_no_turn, skipped_no_data,
+        "Turn analysis: %d pairs collected "
+        "(%d skipped: no index, %d skipped: fetch failed, %d skipped: no turn)",
+        len(analysis_pairs), skipped_no_index, skipped_fetch_failed, skipped_no_turn,
     )
 
     if not analysis_pairs:
@@ -639,7 +674,7 @@ def analyze_turn_deviations(
     total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
     logger.info("Turn analysis: %d turns in %d batches", total, total_batches)
 
-    results: list[TurnProblem] = []
+    results: list[tuple[SessionTurn, TurnProblem]] = []
     for batch_num, start in enumerate(range(0, total, batch_size), 1):
         batch = analysis_pairs[start:start + batch_size]
         processed_so_far = min(start + batch_size, total)
@@ -649,7 +684,9 @@ def analyze_turn_deviations(
 
         batch_results = _analyze_turn_batch(client, batch, batch_num)
         if batch_results is not None:
-            results.extend(batch_results)
+            # Match batch_results (same order) back to (ds, turn) pairs
+            for (ds, turn), tp in zip(batch, batch_results):
+                results.append((turn, tp))
 
     sys.stderr.write("\n")
     sys.stderr.flush()
@@ -663,7 +700,7 @@ def analyze_turn_deviations(
 # ---------------------------------------------------------------------------
 
 
-def run_offset(config: Config) -> OffsetAnalysisResult:
+def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
     users = load_user_files(config.paths.data_dir)
     if not users:
         raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
@@ -673,40 +710,82 @@ def run_offset(config: Config) -> OffsetAnalysisResult:
 
     client = LLMClient(config.llm)
 
-    # Step 1: Deviation detection (now also identifies problematic turn)
-    deviated = detect_deviations(
-        client, all_sessions, config.offset_pipeline.detection_batch_size,
-    )
-
-    # Save intermediate results
     offset_dir = config.paths.output_dir / "offset_analysis"
     offset_dir.mkdir(parents=True, exist_ok=True)
-    (offset_dir / "deviated_sessions.json").write_text(
-        json.dumps([ds.model_dump() for ds in deviated], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    logger.info("Saved %d deviated sessions to %s", len(deviated),
-                offset_dir / "deviated_sessions.json")
 
-    # Step 2: Categorization
-    categories = categorize_deviations(
-        client, deviated, all_sessions,
-        config.offset_pipeline.categorization_batch_size,
-    )
+    # Step 1: Deviation detection (or load from previous run)
+    deviated_file = offset_dir / "deviated_sessions.json"
+    if start_step <= 1:
+        deviated = detect_deviations(
+            client, all_sessions, config.offset_pipeline.detection_batch_size,
+        )
+        deviated_file.write_text(
+            json.dumps([ds.model_dump() for ds in deviated], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Saved %d deviated sessions to %s", len(deviated), deviated_file)
+    else:
+        if not deviated_file.exists():
+            raise FileNotFoundError(
+                f"Cannot skip Step 1: intermediate file not found at {deviated_file}"
+            )
+        deviated_raw = json.loads(deviated_file.read_text(encoding="utf-8"))
+        deviated = [DeviatedSession.model_validate(d) for d in deviated_raw]
+        logger.info("Loaded %d deviated sessions from %s (step 1 skipped)",
+                    len(deviated), deviated_file)
 
-    # Step 3: Turn-level detailed analysis
-    turn_problems = analyze_turn_deviations(
-        client, deviated, all_sessions,
+    # Step 2: Categorization (or load from previous run)
+    categories_file = offset_dir / "categories.json"
+    if start_step <= 2:
+        categories = categorize_deviations(
+            client, deviated, all_sessions,
+            config.offset_pipeline.categorization_batch_size,
+        )
+        categories_file.write_text(
+            json.dumps([c.model_dump() for c in categories], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Saved %d categories to %s", len(categories), categories_file)
+    else:
+        if not categories_file.exists():
+            raise FileNotFoundError(
+                f"Cannot skip Step 2: intermediate file not found at {categories_file}"
+            )
+        categories_raw = json.loads(categories_file.read_text(encoding="utf-8"))
+        categories = [DeviationCategory.model_validate(c) for c in categories_raw]
+        logger.info("Loaded %d categories from %s (step 2 skipped)",
+                    len(categories), categories_file)
+
+    # Step 3: Turn-level detailed analysis via HTTP API
+    turn_results = analyze_turn_deviations(
+        client, deviated,
         config.offset_pipeline.detection_batch_size,
     )
 
-    # Save turn analysis results
+    # Save aggregate turn_problems.json
+    turn_problems = [tp for _, tp in turn_results]
     (offset_dir / "turn_problems.json").write_text(
         json.dumps([tp.model_dump() for tp in turn_problems], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     logger.info("Saved %d turn problems to %s", len(turn_problems),
                 offset_dir / "turn_problems.json")
+
+    # Save per-session {uuid}.json with full turn messages + analysis
+    for turn, tp in turn_results:
+        turn_data = {
+            "session_uuid": tp.session_uuid,
+            "user_name": tp.user_name,
+            "turn_index": tp.turn_index,
+            "messages": [msg.model_dump() for msg in turn.messages],
+            "analysis": tp.model_dump(),
+        }
+        (offset_dir / f"{tp.session_uuid}.json").write_text(
+            json.dumps(turn_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    logger.info("Saved %d per-session turn analysis files to %s",
+                len(turn_results), offset_dir)
 
     # Build summary
     category_counter = Counter()
