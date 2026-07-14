@@ -757,6 +757,8 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
                 offset_dir / "turn_problems.json")
 
     # Save per-session {uuid}.json with full turn messages + analysis
+    turn_problems_dir = offset_dir / "turn_problems"
+    turn_problems_dir.mkdir(parents=True, exist_ok=True)
     for turn, tp in turn_results:
         turn_data = {
             "session_uuid": tp.session_uuid,
@@ -765,12 +767,12 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
             "messages": [msg.model_dump() for msg in turn.messages],
             "analysis": tp.model_dump(),
         }
-        (offset_dir / f"{tp.session_uuid}.json").write_text(
+        (turn_problems_dir / f"{tp.session_uuid}.json").write_text(
             json.dumps(turn_data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     logger.info("Saved %d per-session turn analysis files to %s",
-                len(turn_results), offset_dir)
+                len(turn_results), turn_problems_dir)
 
     # Build summary
     category_counter = Counter()
