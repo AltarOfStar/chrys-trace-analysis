@@ -81,14 +81,9 @@ class DeviatedSession(BaseModel):
     """A session where agent execution deviated from user intent."""
     session_uuid: str
     user_name: str
+    deviation_reason: str = ""
+    problematic_turn_index: int | None = None
     category: str = ""
-    problematic_turns: list[ProblematicTurn] = []
-
-
-class ProblematicTurn(BaseModel):
-    """A turn identified as problematic, with natural-language description."""
-    turn_index: int
-    description: str = ""
 
 
 class TurnProblem(BaseModel):

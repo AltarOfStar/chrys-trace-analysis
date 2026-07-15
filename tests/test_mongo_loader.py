@@ -25,7 +25,6 @@ from chrys_trace_analysis.models import (  # noqa: E402
     DeviatedSession,
     MessageContent,
     OffsetAnalysisResult,
-    ProblematicTurn,
     RawMessage,
     Session,
     SessionRound,
@@ -702,25 +701,25 @@ class TestModelBackwardCompatibility:
         assert s.mcp_tools == []
         assert s.skills == []
 
-    def test_deviated_session_without_problematic_turns(self):
+    def test_deviated_session_without_turn_index(self):
         ds = DeviatedSession(
             session_uuid="u1",
             user_name="test",
-            category="需求理解偏差与指令遵循失败",
+            deviation_reason="测试偏离",
         )
-        assert ds.problematic_turns == []
+        assert ds.problematic_turn_index is None
+        assert ds.category == ""
 
-    def test_deviated_session_with_problematic_turns(self):
+    def test_deviated_session_with_turn_index(self):
         ds = DeviatedSession(
             session_uuid="u2",
             user_name="test",
-            category="执行幻觉与虚假反馈",
-            problematic_turns=[
-                ProblematicTurn(turn_index=3, description="第3轮中助手声称已创建文件但实际未执行"),
-            ],
+            deviation_reason="工具执行错误",
+            problematic_turn_index=3,
+            category="系统异常与执行中断",
         )
-        assert len(ds.problematic_turns) == 1
-        assert ds.problematic_turns[0].turn_index == 3
+        assert ds.problematic_turn_index == 3
+        assert ds.category == "系统异常与执行中断"
 
     def test_offset_analysis_result_without_turn_problems(self):
         r = OffsetAnalysisResult(
@@ -782,14 +781,13 @@ class TestRoundTrip:
         ds = DeviatedSession(
             session_uuid="s1",
             user_name="u1",
+            deviation_reason="工具调用参数错误",
+            problematic_turn_index=2,
             category="代码逻辑缺陷与生成错误",
-            problematic_turns=[
-                ProblematicTurn(turn_index=2, description="第2轮生成的代码有语法错误"),
-            ],
         )
         data = ds.model_dump()
+        assert data["problematic_turn_index"] == 2
         assert data["category"] == "代码逻辑缺陷与生成错误"
-        assert len(data["problematic_turns"]) == 1
 
         tp = TurnProblem(
             session_uuid="s1",
