@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from chrys_trace_analysis.models import (  # noqa: E402
     DeviatedSession,
-    DeviationCategory,
     MessageContent,
     OffsetAnalysisResult,
+    ProblematicTurn,
     RawMessage,
     Session,
     SessionRound,
@@ -702,27 +702,29 @@ class TestModelBackwardCompatibility:
         assert s.mcp_tools == []
         assert s.skills == []
 
-    def test_deviated_session_without_turn_index(self):
+    def test_deviated_session_without_problematic_turns(self):
         ds = DeviatedSession(
             session_uuid="u1",
             user_name="test",
-            deviation_reason="测试偏离",
+            category="需求理解偏差与指令遵循失败",
         )
-        assert ds.problematic_turn_index is None
+        assert ds.problematic_turns == []
 
-    def test_deviated_session_with_turn_index(self):
+    def test_deviated_session_with_problematic_turns(self):
         ds = DeviatedSession(
             session_uuid="u2",
             user_name="test",
-            deviation_reason="工具执行错误",
-            problematic_turn_index=3,
+            category="执行幻觉与虚假反馈",
+            problematic_turns=[
+                ProblematicTurn(turn_index=3, description="第3轮中助手声称已创建文件但实际未执行"),
+            ],
         )
-        assert ds.problematic_turn_index == 3
+        assert len(ds.problematic_turns) == 1
+        assert ds.problematic_turns[0].turn_index == 3
 
     def test_offset_analysis_result_without_turn_problems(self):
         r = OffsetAnalysisResult(
             deviated_sessions=[],
-            categories=[],
             summary={},
         )
         assert r.turn_problems == []
@@ -733,7 +735,7 @@ class TestModelBackwardCompatibility:
             user_name="test",
             turn_index=2,
         )
-        assert tp.problematic_message_indices == []
+        assert tp.deviation_action == ""
         assert tp.turn_analysis == ""
 
     def test_message_content_defaults(self):
@@ -780,25 +782,27 @@ class TestRoundTrip:
         ds = DeviatedSession(
             session_uuid="s1",
             user_name="u1",
-            deviation_reason="工具调用参数错误",
-            problematic_turn_index=2,
+            category="代码逻辑缺陷与生成错误",
+            problematic_turns=[
+                ProblematicTurn(turn_index=2, description="第2轮生成的代码有语法错误"),
+            ],
         )
         data = ds.model_dump()
-        assert data["problematic_turn_index"] == 2
+        assert data["category"] == "代码逻辑缺陷与生成错误"
+        assert len(data["problematic_turns"]) == 1
 
         tp = TurnProblem(
             session_uuid="s1",
             user_name="u1",
             turn_index=2,
-            problematic_message_indices=[3, 5],
+            deviation_action="write_file使用了错误的文件路径",
             turn_analysis="第3条消息调用了错误的文件路径",
         )
         tp_data = tp.model_dump()
-        assert tp_data["problematic_message_indices"] == [3, 5]
+        assert tp_data["deviation_action"] == "write_file使用了错误的文件路径"
 
         result = OffsetAnalysisResult(
             deviated_sessions=[ds],
-            categories=[],
             summary={"total": 1},
             turn_problems=[tp],
         )

@@ -24,10 +24,10 @@ def main() -> None:
     parser.add_argument(
         "--start-step",
         type=int,
-        choices=[1, 2, 3],
+        choices=[1, 2],
         default=1,
         help="Resume offset pipeline from a specific step "
-             "(1=detection, 2=categorization, 3=turn analysis). Default: 1.",
+             "(1=detection+classification, 2=turn analysis). Default: 1.",
     )
     args = parser.parse_args()
 

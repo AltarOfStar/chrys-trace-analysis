@@ -28,7 +28,6 @@ class PipelineConfig(BaseModel):
 
 class OffsetPipelineConfig(BaseModel):
     detection_batch_size: int = 30
-    categorization_batch_size: int = 30
     random_seed: int | None = 42
 
 

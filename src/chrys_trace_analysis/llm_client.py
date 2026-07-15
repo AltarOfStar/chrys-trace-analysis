@@ -33,7 +33,7 @@ def _salvage_json_fallback(text: str) -> dict | None:
     """
     session_uuid = None
     turn_index = None
-    problematic_message_indices = None
+    deviation_action = None
     turn_analysis = None
 
     m = re.search(r'"session_uuid"\s*:\s*"([^"]+)"', text)
@@ -44,12 +44,9 @@ def _salvage_json_fallback(text: str) -> dict | None:
     if m:
         turn_index = int(m.group(1))
 
-    m = re.search(r'"problematic_message_indices"\s*:\s*(\[[^\]]*\])', text)
+    m = re.search(r'"deviation_action"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     if m:
-        try:
-            problematic_message_indices = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
+        deviation_action = m.group(1)
 
     m = re.search(r'"turn_analysis"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     if m:
@@ -61,8 +58,8 @@ def _salvage_json_fallback(text: str) -> dict | None:
             "turn_index": turn_index,
             "turn_analysis": turn_analysis,
         }
-        if problematic_message_indices is not None:
-            result["problematic_message_indices"] = problematic_message_indices
+        if deviation_action is not None:
+            result["deviation_action"] = deviation_action
         return result
 
     return None

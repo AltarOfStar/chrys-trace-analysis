@@ -16,7 +16,6 @@ pipeline:
 
 offset_pipeline:
   detection_batch_size: 30
-  categorization_batch_size: 30
   random_seed: 42
 
 paths:

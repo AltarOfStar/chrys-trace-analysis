@@ -81,8 +81,14 @@ class DeviatedSession(BaseModel):
     """A session where agent execution deviated from user intent."""
     session_uuid: str
     user_name: str
-    deviation_reason: str
-    problematic_turn_index: int | None = None
+    category: str = ""
+    problematic_turns: list[ProblematicTurn] = []
+
+
+class ProblematicTurn(BaseModel):
+    """A turn identified as problematic, with natural-language description."""
+    turn_index: int
+    description: str = ""
 
 
 class TurnProblem(BaseModel):
@@ -90,23 +96,12 @@ class TurnProblem(BaseModel):
     session_uuid: str
     user_name: str = ""
     turn_index: int
-    # Which messages in the turn are problematic (1-indexed within the turn)
-    problematic_message_indices: list[int] = []
-    # Detailed analysis of what went wrong in this turn
+    deviation_action: str = ""
     turn_analysis: str = ""
-
-
-class DeviationCategory(BaseModel):
-    """A category of deviation root causes."""
-    category_name: str
-    description: str
-    session_count: int
-    session_uuids: list[str]
 
 
 class OffsetAnalysisResult(BaseModel):
     """Result of the offset analysis pipeline."""
     deviated_sessions: list[DeviatedSession]
-    categories: list[DeviationCategory]
     summary: dict
     turn_problems: list[TurnProblem] = []
