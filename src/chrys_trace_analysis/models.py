@@ -88,7 +88,7 @@ class DeviatedSession(BaseModel):
 class TurnProblem(BaseModel):
     """Detailed analysis of a specific turn's deviation."""
     session_uuid: str
-    user_name: str
+    user_name: str = ""
     turn_index: int
     # Which messages in the turn are problematic (1-indexed within the turn)
     problematic_message_indices: list[int] = []

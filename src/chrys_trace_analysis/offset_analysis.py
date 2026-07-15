@@ -559,6 +559,12 @@ def _analyze_single_turn(
 ) -> TurnProblem | None:
     """Analyze a single problematic turn, one LLM call per turn."""
     formatted = _format_turn_for_analysis(ds, turn)
+    strict_suffix = (
+        "\n\nCRITICAL: Your response MUST be a single, valid JSON object. "
+        "Do NOT include any markdown formatting, code fences, or extra text. "
+        "The 'turn_analysis' string MUST NOT contain unescaped newlines or "
+        "characters that would break JSON parsing. Use \\n for line breaks inside strings."
+    )
     user_prompt = f"""Below is a problematic conversational turn from a session where the agent deviated from user intent.
 
 Analyze the raw messages in detail and identify:
@@ -577,7 +583,10 @@ Output ONLY valid JSON (no markdown, no extra text):
 
     for attempt in range(1, retries + 1):
         try:
-            raw = client.chat_json(TURN_ANALYSIS_SYSTEM_PROMPT, user_prompt)
+            prompt = user_prompt
+            if attempt > 1:
+                prompt = user_prompt + strict_suffix
+            raw = client.chat_json(TURN_ANALYSIS_SYSTEM_PROMPT, prompt)
             tp = TurnProblem.model_validate(raw)
             tp.user_name = ds.user_name
             return tp
@@ -601,11 +610,15 @@ Output ONLY valid JSON (no markdown, no extra text):
 def analyze_turn_deviations(
     client: LLMClient,
     deviated: list[DeviatedSession],
+    turn_problems_dir: Path | None = None,
 ) -> list[tuple[SessionTurn, TurnProblem]]:
     """Step 3: For each deviated session with a problematic turn, fetch full session
     JSON via HTTP API, parse turns, and run LLM analysis on the target turn's messages.
 
-    Returns list of (turn, TurnProblem) tuples for per-session file saving.
+    When *turn_problems_dir* is provided, each turn's per-session JSON file is written
+    immediately after analysis, so partial results survive a crash mid-pipeline.
+
+    Returns list of (turn, TurnProblem) tuples for aggregate file saving.
     """
     if not deviated:
         logger.info("No deviated sessions to analyze at turn level.")
@@ -664,6 +677,9 @@ def analyze_turn_deviations(
     total = len(analysis_pairs)
     logger.info("Turn analysis: %d turns to analyze (one turn per LLM call)", total)
 
+    if turn_problems_dir is not None:
+        turn_problems_dir.mkdir(parents=True, exist_ok=True)
+
     results: list[tuple[SessionTurn, TurnProblem]] = []
     for i, (ds, turn) in enumerate(analysis_pairs, 1):
         message = _render_progress(i, total, i, total)
@@ -673,12 +689,34 @@ def analyze_turn_deviations(
         tp = _analyze_single_turn(client, ds, turn, index=i, total=total)
         if tp is not None:
             results.append((turn, tp))
+            # Write per-session file immediately so partial results survive a crash
+            if turn_problems_dir is not None:
+                _write_turn_problem_file(turn_problems_dir, turn, tp)
 
     sys.stderr.write("\n")
     sys.stderr.flush()
 
     logger.info("Turn analysis complete: %d turn problems analyzed", len(results))
     return results
+
+
+def _write_turn_problem_file(
+    turn_problems_dir: Path,
+    turn: SessionTurn,
+    tp: TurnProblem,
+) -> None:
+    """Write a single turn problem's per-session JSON file."""
+    turn_data = {
+        "session_uuid": tp.session_uuid,
+        "user_name": tp.user_name,
+        "turn_index": tp.turn_index,
+        "messages": [msg.model_dump() for msg in turn.messages],
+        "analysis": tp.model_dump(),
+    }
+    (turn_problems_dir / f"{tp.session_uuid}.json").write_text(
+        json.dumps(turn_data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -743,11 +781,13 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
                     len(categories), categories_file)
 
     # Step 3: Turn-level detailed analysis via HTTP API (one turn per LLM call)
+    # Per-session JSON files are written immediately inside analyze_turn_deviations.
+    turn_problems_dir = offset_dir / "turn_problems"
     turn_results = analyze_turn_deviations(
-        client, deviated,
+        client, deviated, turn_problems_dir=turn_problems_dir,
     )
 
-    # Save aggregate turn_problems.json
+    # Save aggregate turn_problems.json (single write at the end)
     turn_problems = [tp for _, tp in turn_results]
     (offset_dir / "turn_problems.json").write_text(
         json.dumps([tp.model_dump() for tp in turn_problems], ensure_ascii=False, indent=2),
@@ -755,24 +795,6 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
     )
     logger.info("Saved %d turn problems to %s", len(turn_problems),
                 offset_dir / "turn_problems.json")
-
-    # Save per-session {uuid}.json with full turn messages + analysis
-    turn_problems_dir = offset_dir / "turn_problems"
-    turn_problems_dir.mkdir(parents=True, exist_ok=True)
-    for turn, tp in turn_results:
-        turn_data = {
-            "session_uuid": tp.session_uuid,
-            "user_name": tp.user_name,
-            "turn_index": tp.turn_index,
-            "messages": [msg.model_dump() for msg in turn.messages],
-            "analysis": tp.model_dump(),
-        }
-        (turn_problems_dir / f"{tp.session_uuid}.json").write_text(
-            json.dumps(turn_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    logger.info("Saved %d per-session turn analysis files to %s",
-                len(turn_results), turn_problems_dir)
 
     # Build summary
     category_counter = Counter()
