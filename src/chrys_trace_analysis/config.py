@@ -36,7 +36,6 @@ class MongoConfig(BaseModel):
     uri: str
     database: str = "lingxi"
     collection: str = "sessions"
-    members_file: str = ""
     min_add_lines: int = 1000
 
 

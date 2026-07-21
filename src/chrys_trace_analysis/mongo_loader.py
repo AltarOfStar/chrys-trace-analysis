@@ -228,6 +228,22 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def fetch_all_user_ids(
+    uri: str,
+    database: str = "lingxi",
+    collection: str = "sessions",
+) -> list[str]:
+    """Query MongoDB for all distinct user_ids in the sessions collection."""
+    from pymongo import MongoClient
+
+    client = MongoClient(uri)
+    db = client[database]
+    coll = db[collection]
+    user_ids = coll.distinct("meta.user_id")
+    client.close()
+    return list(user_ids)
+
+
 def fetch_sessions_by_user(
     user_ids: list[str],
     uri: str,
@@ -357,17 +373,13 @@ def load_and_simplify_from_mongo(
     构建 SimplifiedTrace 并写入 ``{traces_dir}/simplified/{uuid}.json``。
     返回写入的轨迹文件数量。
     """
-    # 1. 解析群组成员
-    logger.info("Parsing group members from %s", mongo_cfg.members_file)
-    groups = parse_group_members(mongo_cfg.members_file)
-    groups = [g for g in groups if g["group_name"] != "Chrys Default"]
-    logger.info("Loaded %d groups (excluded Chrys Default)", len(groups))
-
-    user_to_groups = _build_user_to_groups(groups)
-
-    all_user_ids = list(dict.fromkeys(
-        m["user_id"] for g in groups for m in g["members"]
-    ))
+    # 1. 从 MongoDB 获取所有 user_id
+    logger.info("Fetching distinct user IDs from MongoDB...")
+    all_user_ids = fetch_all_user_ids(
+        uri=mongo_cfg.uri,
+        database=mongo_cfg.database,
+        collection=mongo_cfg.collection,
+    )
     logger.info("Total unique user IDs: %d", len(all_user_ids))
 
     # 2. 从 MongoDB 拉取数据

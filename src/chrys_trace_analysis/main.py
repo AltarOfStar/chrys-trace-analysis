@@ -29,11 +29,6 @@ def main() -> None:
         help="Resume deviation analysis from a specific step "
              "(1=detection, 2=categorization, 3=turn analysis). Default: 1.",
     )
-    parser.add_argument(
-        "--mongo",
-        action="store_true",
-        help="Load and simplify traces from MongoDB before running the pipeline",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -44,19 +39,6 @@ def main() -> None:
 
     config = load_config(args.config)
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.mongo:
-        if config.mongo is None:
-            raise ValueError(
-                "MongoDB config required when --mongo is specified. "
-                "Add a 'mongo' section to your config file."
-            )
-        from chrys_trace_analysis.mongo_loader import load_and_simplify_from_mongo
-
-        count = load_and_simplify_from_mongo(config.mongo, config.paths.traces_dir)
-        logger = logging.getLogger(__name__)
-        logger.info("Saved %d simplified trace files to %s",
-                    count, config.paths.traces_dir / "simplified")
 
     from chrys_trace_analysis.offset_analysis import run_deviation_analysis
 

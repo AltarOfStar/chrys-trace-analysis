@@ -665,10 +665,20 @@ def _write_turn_problem_file(
 
 
 def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
-    # 优先从简化轨迹加载（data/traces/simplified/{uuid}.json）
-    # 回退到传统 per-user JSON 文件加载
     traces_dir = config.paths.traces_dir
     simplified_dir = traces_dir / "simplified"
+
+    # Step 0: 如果配置了 MongoDB 且简化轨迹不存在，自动从 Mongo 拉取
+    if config.mongo is not None:
+        if not simplified_dir.is_dir() or next(simplified_dir.glob("*.json"), None) is None:
+            from .mongo_loader import load_and_simplify_from_mongo
+
+            logger.info("Simplified traces not found, loading from MongoDB...")
+            count = load_and_simplify_from_mongo(config.mongo, traces_dir)
+            logger.info("Saved %d simplified trace files to %s", count, simplified_dir)
+
+    # 优先从简化轨迹加载（data/traces/simplified/{uuid}.json）
+    # 回退到传统 per-user JSON 文件加载
     if simplified_dir.is_dir() and next(simplified_dir.glob("*.json"), None) is not None:
         all_sessions = load_simplified_traces(traces_dir)
         if not all_sessions:
