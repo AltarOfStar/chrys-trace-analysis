@@ -369,10 +369,11 @@ def load_and_simplify_from_mongo(
 ) -> int:
     """从 MongoDB 拉取数据，按 min_add_lines 筛选，写出简化轨迹文件。
 
-    对每个符合条件的用户，遍历其会话；对每一条有 add_lines_hits > 0 的会话，
-    构建 SimplifiedTrace 并写入 ``{traces_dir}/simplified/{uuid}.json``。
+    逐用户流式处理：拉取一个用户 → 筛选 → 写出 → 释放，避免 OOM。
     返回写入的轨迹文件数量。
     """
+    from pymongo import MongoClient
+
     # 1. 从 MongoDB 获取所有 user_id
     logger.info("Fetching distinct user IDs from MongoDB...")
     all_user_ids = fetch_all_user_ids(
@@ -382,26 +383,24 @@ def load_and_simplify_from_mongo(
     )
     logger.info("Total unique user IDs: %d", len(all_user_ids))
 
-    # 2. 从 MongoDB 拉取数据
-    logger.info("Fetching sessions from MongoDB...")
-    sessions_by_user = fetch_sessions_by_user(
-        all_user_ids,
-        uri=mongo_cfg.uri,
-        database=mongo_cfg.database,
-        collection=mongo_cfg.collection,
-    )
-
-    users_with_data = sum(1 for v in sessions_by_user.values() if v)
-    total_sessions = sum(len(v) for v in sessions_by_user.values())
-    logger.info("Users with data: %d/%d, total sessions: %d",
-                users_with_data, len(all_user_ids), total_sessions)
-
-    # 3. 筛选用户并写出简化轨迹
+    # 2. 准备输出目录
     simplified_dir = traces_dir / "simplified"
     simplified_dir.mkdir(parents=True, exist_ok=True)
 
+    # 3. 打开连接，逐用户流式处理
+    client = MongoClient(mongo_cfg.uri)
+    db = client[mongo_cfg.database]
+    coll = db[mongo_cfg.collection]
+
     written = 0
-    for uid, session_docs in sessions_by_user.items():
+    users_with_data = 0
+    total = len(all_user_ids)
+
+    for idx, uid in enumerate(all_user_ids, 1):
+        session_docs = list(coll.find({"meta.user_id": uid}).sort("created_at", -1))
+        if session_docs:
+            users_with_data += 1
+
         # 计算用户总 add_lines
         total_add_lines = 0
         session_add_lines_list: list[tuple[dict, int]] = []
@@ -413,8 +412,8 @@ def load_and_simplify_from_mongo(
                 session_add_lines_list.append((doc, add_lines))
 
         if total_add_lines < mongo_cfg.min_add_lines:
-            logger.debug("Skipping user %s (total_add_lines=%d < %d)",
-                         uid, total_add_lines, mongo_cfg.min_add_lines)
+            if idx % 50 == 0 or idx == total:
+                logger.info("MongoDB fetch progress: %d/%d", idx, total)
             continue
 
         for doc, _ in session_add_lines_list:
@@ -459,6 +458,12 @@ def load_and_simplify_from_mongo(
             )
             written += 1
 
+        if idx % 50 == 0 or idx == total:
+            logger.info("MongoDB fetch progress: %d/%d (written: %d)",
+                        idx, total, written)
+
+    client.close()
+    logger.info("Users with data: %d/%d", users_with_data, total)
     logger.info("Wrote %d simplified trace files to %s", written, simplified_dir)
     return written
 
