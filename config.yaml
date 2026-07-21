@@ -23,7 +23,7 @@ mongo:
   uri: "mongodb://rwuser:Lingxi%402012@7.222.179.37:8635,7.222.178.97:8635/lingxi-test?authSource=admin"
   database: "lingxi"
   collection: "sessions"
-  min_add_lines: 1000
+  min_add_lines: 100
 
 paths:
   data_dir: "./data"
