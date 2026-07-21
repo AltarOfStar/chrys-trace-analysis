@@ -71,6 +71,15 @@ class ClassifiedSession(BaseModel):
     scenario_name: str
 
 
+class SimplifiedTrace(BaseModel):
+    """单个会话的简化轨迹，不含原始消息（用于 on-disk 存储）。"""
+    uuid: str
+    user_name: str
+    session_abstract: list[SessionRound]
+    mcp_tools: list[str] = []
+    skills: list[str] = []
+
+
 class AnalysisResult(BaseModel):
     scenarios: list[Scenario]
     classified_sessions: list[ClassifiedSession]

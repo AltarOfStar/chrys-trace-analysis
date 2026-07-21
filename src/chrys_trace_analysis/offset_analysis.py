@@ -12,7 +12,7 @@ import openai
 from httpx import ReadTimeout
 
 from .config import Config
-from .loader import load_user_files
+from .loader import load_simplified_traces, load_user_files
 from .llm_client import LLMClient
 from .models import (
     DeviatedSession,
@@ -665,12 +665,20 @@ def _write_turn_problem_file(
 
 
 def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
-    users = load_user_files(config.paths.data_dir)
-    if not users:
-        raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
-
-    all_sessions = flatten_all_sessions(users)
-    logger.info("Loaded %d sessions from %d users", len(all_sessions), len(users))
+    # 优先从简化轨迹加载（data/traces/simplified/{uuid}.json）
+    # 回退到传统 per-user JSON 文件加载
+    traces_dir = config.paths.traces_dir
+    simplified_dir = traces_dir / "simplified"
+    if simplified_dir.is_dir() and next(simplified_dir.glob("*.json"), None) is not None:
+        all_sessions = load_simplified_traces(traces_dir)
+        if not all_sessions:
+            raise RuntimeError(f"No valid simplified trace files found in {simplified_dir}")
+    else:
+        users = load_user_files(config.paths.data_dir)
+        if not users:
+            raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
+        all_sessions = flatten_all_sessions(users)
+    logger.info("Loaded %d sessions", len(all_sessions))
 
     client = LLMClient(config.llm)
 
@@ -742,9 +750,10 @@ def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysi
     category_counter = Counter(ds.category for ds in deviated)
 
     sessions_with_turn_index = sum(1 for ds in deviated if ds.problematic_turn_index is not None)
+    unique_users = len(set(u for u, _ in all_sessions))
 
     summary = {
-        "total_users": len(users),
+        "total_users": unique_users,
         "total_sessions": len(all_sessions),
         "deviated_count": len(deviated),
         "deviation_rate": f"{len(deviated) / len(all_sessions) * 100:.1f}%" if all_sessions else "0%",

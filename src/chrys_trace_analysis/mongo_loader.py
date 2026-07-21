@@ -6,7 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from .config import MongoConfig
-from .models import MessageContent, RawMessage, Session, SessionRound, SessionTurn, UserData
+from .models import (
+    MessageContent,
+    RawMessage,
+    Session,
+    SessionRound,
+    SessionTurn,
+    SimplifiedTrace,
+    UserData,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +345,110 @@ def mongo_docs_to_user_data(
 # ---------------------------------------------------------------------------
 # Top-level orchestration
 # ---------------------------------------------------------------------------
+
+
+def load_and_simplify_from_mongo(
+    mongo_cfg: MongoConfig,
+    traces_dir: Path,
+) -> int:
+    """从 MongoDB 拉取数据，按 min_add_lines 筛选，写出简化轨迹文件。
+
+    对每个符合条件的用户，遍历其会话；对每一条有 add_lines_hits > 0 的会话，
+    构建 SimplifiedTrace 并写入 ``{traces_dir}/simplified/{uuid}.json``。
+    返回写入的轨迹文件数量。
+    """
+    # 1. 解析群组成员
+    logger.info("Parsing group members from %s", mongo_cfg.members_file)
+    groups = parse_group_members(mongo_cfg.members_file)
+    groups = [g for g in groups if g["group_name"] != "Chrys Default"]
+    logger.info("Loaded %d groups (excluded Chrys Default)", len(groups))
+
+    user_to_groups = _build_user_to_groups(groups)
+
+    all_user_ids = list(dict.fromkeys(
+        m["user_id"] for g in groups for m in g["members"]
+    ))
+    logger.info("Total unique user IDs: %d", len(all_user_ids))
+
+    # 2. 从 MongoDB 拉取数据
+    logger.info("Fetching sessions from MongoDB...")
+    sessions_by_user = fetch_sessions_by_user(
+        all_user_ids,
+        uri=mongo_cfg.uri,
+        database=mongo_cfg.database,
+        collection=mongo_cfg.collection,
+    )
+
+    users_with_data = sum(1 for v in sessions_by_user.values() if v)
+    total_sessions = sum(len(v) for v in sessions_by_user.values())
+    logger.info("Users with data: %d/%d, total sessions: %d",
+                users_with_data, len(all_user_ids), total_sessions)
+
+    # 3. 筛选用户并写出简化轨迹
+    simplified_dir = traces_dir / "simplified"
+    simplified_dir.mkdir(parents=True, exist_ok=True)
+
+    written = 0
+    for uid, session_docs in sessions_by_user.items():
+        # 计算用户总 add_lines
+        total_add_lines = 0
+        session_add_lines_list: list[tuple[dict, int]] = []
+        for doc in session_docs:
+            mr = doc.get("mr_relation")
+            add_lines = _safe_int(mr.get("add_lines_hits")) if isinstance(mr, dict) else 0
+            total_add_lines += add_lines
+            if add_lines > 0:
+                session_add_lines_list.append((doc, add_lines))
+
+        if total_add_lines < mongo_cfg.min_add_lines:
+            logger.debug("Skipping user %s (total_add_lines=%d < %d)",
+                         uid, total_add_lines, mongo_cfg.min_add_lines)
+            continue
+
+        for doc, _ in session_add_lines_list:
+            session_uuid = doc.get("uuid", "")
+            if not session_uuid:
+                continue
+
+            messages = doc.get("messages", [])
+            abstract = build_session_abstract(messages)
+
+            # MCP tools
+            mcp_tools: list[str] = []
+            raw_tools = doc.get("mcp_tools", [])
+            if isinstance(raw_tools, list):
+                for t in raw_tools:
+                    if isinstance(t, dict):
+                        name = t.get("tool_name", "")
+                        if name:
+                            mcp_tools.append(name)
+
+            # Skills
+            skills: list[str] = []
+            raw_skills = doc.get("skills", [])
+            if isinstance(raw_skills, list):
+                for s in raw_skills:
+                    if isinstance(s, dict):
+                        name = s.get("skill_name", "")
+                        if name:
+                            skills.append(name)
+
+            trace = SimplifiedTrace(
+                uuid=session_uuid,
+                user_name=uid,
+                session_abstract=abstract,
+                mcp_tools=mcp_tools,
+                skills=skills,
+            )
+            out_path = simplified_dir / f"{session_uuid}.json"
+            out_path.write_text(
+                trace.model_dump_json(ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            written += 1
+
+    logger.info("Wrote %d simplified trace files to %s", written, simplified_dir)
+    return written
 
 
 def load_from_mongo(mongo_cfg: MongoConfig) -> list[UserData]:

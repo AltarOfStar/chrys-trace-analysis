@@ -37,11 +37,13 @@ class MongoConfig(BaseModel):
     database: str = "lingxi"
     collection: str = "sessions"
     members_file: str = ""
+    min_add_lines: int = 1000
 
 
 class PathsConfig(BaseModel):
     data_dir: Path
     output_dir: Path
+    traces_dir: Path
 
 
 class Config(BaseModel):
@@ -70,5 +72,9 @@ def load_config(path: str | Path) -> Config:
     config_dir = Path(path).resolve().parent
     raw["paths"]["data_dir"] = (config_dir / raw["paths"]["data_dir"]).resolve()
     raw["paths"]["output_dir"] = (config_dir / raw["paths"]["output_dir"]).resolve()
+    if "traces_dir" in raw.get("paths", {}):
+        raw["paths"]["traces_dir"] = (config_dir / raw["paths"]["traces_dir"]).resolve()
+    else:
+        raw["paths"]["traces_dir"] = raw["paths"]["data_dir"] / "traces"
 
     return Config.model_validate(raw)
