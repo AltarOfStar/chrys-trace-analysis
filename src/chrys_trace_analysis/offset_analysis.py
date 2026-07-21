@@ -664,7 +664,7 @@ def _write_turn_problem_file(
 # ---------------------------------------------------------------------------
 
 
-def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
+def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
     users = load_user_files(config.paths.data_dir)
     if not users:
         raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
@@ -674,14 +674,14 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
 
     client = LLMClient(config.llm)
 
-    offset_dir = config.paths.output_dir / "offset_analysis"
-    offset_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir = config.paths.output_dir / "deviation_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
 
     # Step 1: Deviation detection (or load from previous run)
-    deviated_file = offset_dir / "deviated_sessions.json"
+    deviated_file = analysis_dir / "deviated_sessions.json"
     if start_step <= 1:
         deviated = detect_deviations(
-            client, all_sessions, config.offset_pipeline.detection_batch_size,
+            client, all_sessions, config.deviation_analysis.detection_batch_size,
         )
         deviated_file.write_text(
             json.dumps([ds.model_dump() for ds in deviated], ensure_ascii=False, indent=2),
@@ -702,7 +702,7 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
     if start_step <= 2:
         deviated = categorize_deviations(
             client, deviated, all_sessions,
-            config.offset_pipeline.categorization_batch_size,
+            config.deviation_analysis.categorization_batch_size,
         )
         deviated_file.write_text(
             json.dumps([ds.model_dump() for ds in deviated], ensure_ascii=False, indent=2),
@@ -724,19 +724,19 @@ def run_offset(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
     # Per-session JSON files are written immediately inside analyze_turn_deviations
     # under category sub-folders.
     sessions_map: dict[str, Session] = {s.session_uuid: s for _, s in all_sessions}
-    turn_problems_dir = offset_dir / "turn_problems"
+    turn_problems_dir = analysis_dir / "turn_problems"
     turn_results = analyze_turn_deviations(
         client, deviated, sessions_map, turn_problems_dir=turn_problems_dir,
     )
 
     # Save aggregate turn_problems.json (single write at the end)
     turn_problems = [tp for _, tp in turn_results]
-    (offset_dir / "turn_problems.json").write_text(
+    (analysis_dir / "turn_problems.json").write_text(
         json.dumps([tp.model_dump() for tp in turn_problems], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     logger.info("Saved %d turn problems to %s", len(turn_problems),
-                offset_dir / "turn_problems.json")
+                analysis_dir / "turn_problems.json")
 
     # Build summary
     category_counter = Counter(ds.category for ds in deviated)

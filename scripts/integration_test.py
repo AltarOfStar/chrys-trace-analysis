@@ -1,8 +1,8 @@
-"""Integration test: load sessions from offset pipeline input, sample random
+"""Integration test: load sessions from deviation analysis input, sample random
 UUIDs, fetch full session JSON via HTTP API, and validate the conversion.
 
 Usage:
-    # Dry-run: validate models from offset pipeline input only (no network)
+    # Dry-run: validate models from deviation analysis input only (no network)
     python scripts/integration_test.py --dry-run
 
     # Full integration: sample UUIDs, fetch via API, convert, validate
@@ -137,13 +137,13 @@ def _print_report(report: dict) -> None:
 
 
 def run_dry_run(data_dir: Path) -> bool:
-    """Load from offset pipeline input and validate the data model.
+    """Load from deviation analysis input and validate the data model.
 
     This exercises the model layer and mongo_docs_to_user_data using
     existing JSON data — no network access needed.
     """
     print("\n" + "=" * 60)
-    print("  DRY-RUN: Validate session models from offset pipeline input")
+    print("  DRY-RUN: Validate session models from deviation analysis input")
     print("=" * 60)
 
     users = load_user_files(data_dir)
@@ -341,7 +341,7 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Only validate models from offset pipeline input (no network access needed)",
+        help="Only validate models from deviation analysis input (no network access needed)",
     )
     parser.add_argument(
         "--config", type=str, default="config.yaml",

@@ -26,7 +26,7 @@ class PipelineConfig(BaseModel):
     classification_batch_size: int = 50
 
 
-class OffsetPipelineConfig(BaseModel):
+class DeviationAnalysisConfig(BaseModel):
     detection_batch_size: int = 30
     categorization_batch_size: int = 30
     random_seed: int | None = 42
@@ -47,7 +47,7 @@ class PathsConfig(BaseModel):
 class Config(BaseModel):
     llm: LLMConfig
     pipeline: PipelineConfig
-    offset_pipeline: OffsetPipelineConfig = OffsetPipelineConfig()
+    deviation_analysis: DeviationAnalysisConfig = DeviationAnalysisConfig()
     mongo: MongoConfig | None = None
     paths: PathsConfig
 

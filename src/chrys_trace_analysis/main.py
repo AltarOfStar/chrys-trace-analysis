@@ -12,9 +12,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chrys Trace Analysis")
     parser.add_argument(
         "--pipeline",
-        choices=["scenario", "offset"],
-        default="scenario",
-        help="Which pipeline to run (default: scenario)",
+        choices=["deviation_analysis"],
+        default="deviation_analysis",
+        help="Which pipeline to run (default: deviation_analysis)",
     )
     parser.add_argument(
         "--config",
@@ -26,7 +26,7 @@ def main() -> None:
         type=int,
         choices=[1, 2, 3],
         default=1,
-        help="Resume offset pipeline from a specific step "
+        help="Resume deviation analysis from a specific step "
              "(1=detection, 2=categorization, 3=turn analysis). Default: 1.",
     )
     args = parser.parse_args()
@@ -40,16 +40,10 @@ def main() -> None:
     config = load_config(args.config)
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.pipeline == "offset":
-        from chrys_trace_analysis.offset_analysis import run_offset
+    from chrys_trace_analysis.offset_analysis import run_deviation_analysis
 
-        result = run_offset(config, start_step=args.start_step)
-        output_path = config.paths.output_dir / "offset_analysis" / "offset_analysis_result.json"
-    else:
-        from chrys_trace_analysis.pipeline import run
-
-        result = run(config)
-        output_path = config.paths.output_dir / "analysis_result.json"
+    result = run_deviation_analysis(config, start_step=args.start_step)
+    output_path = config.paths.output_dir / "deviation_analysis" / "deviation_analysis_result.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(

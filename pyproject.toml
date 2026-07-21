@@ -1,7 +1,7 @@
 [project]
 name = "chrys-trace-analysis"
 version = "0.1.0"
-description = "Coding agent trajectory analysis — scenario discovery and session classification"
+description = "Coding agent trajectory analysis — deviation detection, categorization, and turn-level analysis"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

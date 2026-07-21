@@ -721,7 +721,7 @@ class TestModelBackwardCompatibility:
         assert ds.problematic_turn_index == 3
         assert ds.category == "系统异常与执行中断"
 
-    def test_offset_analysis_result_without_turn_problems(self):
+    def test_deviation_analysis_result_without_turn_problems(self):
         r = OffsetAnalysisResult(
             deviated_sessions=[],
             summary={},
