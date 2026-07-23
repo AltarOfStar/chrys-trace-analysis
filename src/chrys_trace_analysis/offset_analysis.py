@@ -105,15 +105,15 @@ CATEGORIZATION_SYSTEM_PROMPT = """You are an expert at categorizing failure patt
 
 For each deviated session, classify it into **ONE** of the following 5 categories:
 
-1. **需求理解偏差与指令遵循失败** — 未能准确理解用户核心意图、业务逻辑或明确约束，导致执行错误任务、提供不符合预期的解决方法或违反规范。
+1. **需求理解偏差与指令遵循失败** — Agent 对用户需求的核心意图、业务目标或技术背景理解不足，导致执行方向偏离。典型表现包括：忽略用户明确给出的约束条件或偏好设定（如指定的语言、框架、命名规范、文件路径）；对用户提出的多步骤任务遗漏其中若干步骤；将用户的问题曲解为另一个无关问题并给出答非所问的结果；用户多次重复或修正同一需求但 Agent 仍未调整执行策略。此外，当用户给出明确、具体的指令（如"不要修改配置文件""使用某某库"）而 Agent 未严格遵循时，也归入此类。关键在于：用户意图是清晰的，但 Agent 的理解或执行出现了偏差。
 
-2. **执行幻觉与虚假反馈** — 声称任务已完成、文件已修改或操作已生效，但实际未执行、执行失败或结果与事实不符，导致用户无法验证修改正确性。
+2. **执行幻觉与虚假反馈** — Agent 向用户传达了与事实不符的信息，造成"已完成任务"的假象。典型表现包括：声称已完成某个文件写入、命令执行或代码修改，但实际并未调用对应工具，或调用了工具但操作失败未察觉；对工具执行结果进行错误的总结或篡改（如将报错描述为成功）；虚构不存在的文件内容、API 接口或功能特性来回复用户；在未真正验证的情况下断言"测试通过""问题已修复"。关键在于：Agent 的反馈与系统实际状态之间存在明确矛盾，用户若不经二次验证将直接被误导。
 
-3. **代码逻辑缺陷与生成错误** — 生成的内容存在语法错误、逻辑漏洞、编译失败或不符合规范。
+3. **代码逻辑缺陷与生成错误** — Agent 生成的代码、配置或命令存在客观的技术性错误，即使需求理解正确也会因生成质量问题导致执行失败。典型表现包括：语法错误导致编译或解释失败；类型不匹配、空指针、索引越界等运行时错误；API 调用方式错误（参数顺序、返回值处理不当）；生成的 SQL、正则表达式、shell 命令等存在逻辑漏洞；静态检查工具或 linter 报告的明确问题。关键在于：问题出在生成内容本身的质量上，而非需求理解或系统环境。
 
-4. **系统异常与执行中断** — 因底层问题导致任务无法完成或会话异常中止，包括执行中断、HTTP错误、上下文超出限制、资源限制、网络超时、会话数据缺失等。
+4. **系统异常与执行中断** — 因运行环境、基础设施或外部依赖的问题导致任务无法正常推进，而非 Agent 自身决策或能力缺陷。典型表现包括：网络波动导致 API 调用超时或连接失败；上下文窗口超出限制导致对话截断；工具执行进程被系统杀死或资源耗尽；会话数据在传输或存储过程中丢失或损坏；并发冲突或文件锁导致操作失败。关键在于：Agent 的行为本身无明显错误，但外部条件阻碍了正常执行。
 
-5. **其他原因导致的偏差** — 需额外说明具体原因。
+5. **其他原因导致的偏差** — 上述四类均无法准确覆盖，但会话确实出现了明显的执行偏差。此类应谨慎使用，仅在确实无法归入前四类时选择，并需在后续分析中额外说明具体原因。典型边缘情况包括：Agent 执行方向大体正确但选择了明显次优或冗余的技术方案；Agent 的行为符合指令但引发了用户未预见的副作用；多个类别的特征交织难以明确区分。
 
 Output a JSON array. Each element must have:
 - "session_uuid": the session UUID
@@ -756,8 +756,8 @@ def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysi
     logger.info("Saved %d turn problems to %s", len(turn_problems),
                 analysis_dir / "turn_problems.json")
 
-    # Build summary
-    category_counter = Counter(ds.category for ds in deviated)
+    # Build summary — exclude uncategorized sessions (empty category) from distribution
+    category_counter = Counter(ds.category for ds in deviated if ds.category)
 
     sessions_with_turn_index = sum(1 for ds in deviated if ds.problematic_turn_index is not None)
     unique_users = len(set(u for u, _ in all_sessions))
