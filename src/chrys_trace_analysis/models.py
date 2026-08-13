@@ -45,15 +45,8 @@ class Session(BaseModel):
     skills: list[str] = []
     # Full turn data with raw messages, for detailed per-turn analysis
     turns: list[SessionTurn] = []
-    # Session metadata from MongoDB
+    # Session metadata (meta section of the session.json envelope)
     meta: dict = {}
-
-
-class UserData(BaseModel):
-    user_name: str
-    total_add_lines: int
-    groups: list[str] = []
-    sessions: list[Session]
 
 
 class Scenario(BaseModel):
@@ -69,15 +62,6 @@ class ClassifiedSession(BaseModel):
     session_uuid: str
     user_name: str
     scenario_name: str
-
-
-class SimplifiedTrace(BaseModel):
-    """单个会话的简化轨迹，不含原始消息（用于 on-disk 存储）。"""
-    uuid: str
-    user_name: str
-    session_abstract: list[SessionRound]
-    mcp_tools: list[str] = []
-    skills: list[str] = []
 
 
 class AnalysisResult(BaseModel):
@@ -109,3 +93,46 @@ class OffsetAnalysisResult(BaseModel):
     deviated_sessions: list[DeviatedSession]
     summary: dict
     turn_problems: list[TurnProblem] = []
+
+
+class Intervention(BaseModel):
+    """一次人工介入：类型、位置与简要描述。
+
+    type 为聚合后的标准类型；type_raw 保留批次分析阶段的原始类型。
+    """
+    type: str = ""
+    type_raw: str = ""
+    position: str = ""
+    description: str = ""
+
+
+class TraceTaskAnalysis(BaseModel):
+    """单条轨迹的任务与人介入分析结果。
+
+    task_category 为聚合后的标准任务分类（单个词）；task_category_raw 保留
+    批次分析阶段的原始分类词。
+    """
+    session_uuid: str
+    user_name: str = ""
+    task_category: str = ""
+    task_category_raw: str = ""
+    task_summary: str = ""
+    human_intervention: bool = False
+    interventions: list[Intervention] = []
+
+
+class CategoryDefinition(BaseModel):
+    """聚合后的固定分类（任务分类或人工介入类型）。"""
+    name: str
+    description: str = ""
+    count: int = 0
+
+
+class TraceAnalysisResult(BaseModel):
+    """Result of the trace analysis pipeline."""
+    analyses: list[TraceTaskAnalysis]
+    task_categories: list[CategoryDefinition]
+    intervention_types: list[CategoryDefinition]
+    task_category_mapping: dict[str, str] = {}
+    intervention_type_mapping: dict[str, str] = {}
+    summary: dict

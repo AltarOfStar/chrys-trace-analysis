@@ -32,24 +32,21 @@ class DeviationAnalysisConfig(BaseModel):
     random_seed: int | None = 42
 
 
-class MongoConfig(BaseModel):
-    uri: str
-    database: str = "lingxi"
-    collection: str = "sessions"
-    min_add_lines: int = 1000
+class TraceAnalysisConfig(BaseModel):
+    batch_size: int = 20
 
 
 class PathsConfig(BaseModel):
     data_dir: Path
     output_dir: Path
-    traces_dir: Path
+    sessions_dir: Path
 
 
 class Config(BaseModel):
     llm: LLMConfig
     pipeline: PipelineConfig
     deviation_analysis: DeviationAnalysisConfig = DeviationAnalysisConfig()
-    mongo: MongoConfig | None = None
+    trace_analysis: TraceAnalysisConfig = TraceAnalysisConfig()
     paths: PathsConfig
 
 
@@ -71,9 +68,9 @@ def load_config(path: str | Path) -> Config:
     config_dir = Path(path).resolve().parent
     raw["paths"]["data_dir"] = (config_dir / raw["paths"]["data_dir"]).resolve()
     raw["paths"]["output_dir"] = (config_dir / raw["paths"]["output_dir"]).resolve()
-    if "traces_dir" in raw.get("paths", {}):
-        raw["paths"]["traces_dir"] = (config_dir / raw["paths"]["traces_dir"]).resolve()
+    if "sessions_dir" in raw.get("paths", {}):
+        raw["paths"]["sessions_dir"] = (config_dir / raw["paths"]["sessions_dir"]).resolve()
     else:
-        raw["paths"]["traces_dir"] = raw["paths"]["data_dir"] / "traces"
+        raw["paths"]["sessions_dir"] = raw["paths"]["data_dir"] / "sessions"
 
     return Config.model_validate(raw)

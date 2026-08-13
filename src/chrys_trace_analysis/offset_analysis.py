@@ -12,7 +12,7 @@ import openai
 from httpx import ReadTimeout
 
 from .config import Config
-from .loader import load_simplified_traces, load_user_files
+from .loader import build_session_turns, load_sessions
 from .llm_client import LLMClient
 from .models import (
     DeviatedSession,
@@ -23,8 +23,6 @@ from .models import (
     SessionTurn,
     TurnProblem,
 )
-from .mongo_loader import build_session_turns
-from .sampler import flatten_all_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -665,29 +663,12 @@ def _write_turn_problem_file(
 
 
 def run_deviation_analysis(config: Config, start_step: int = 1) -> OffsetAnalysisResult:
-    traces_dir = config.paths.traces_dir
-    simplified_dir = traces_dir / "simplified"
-
-    # Step 0: 如果配置了 MongoDB 且简化轨迹不存在，自动从 Mongo 拉取
-    if config.mongo is not None:
-        if not simplified_dir.is_dir() or next(simplified_dir.glob("*.json"), None) is None:
-            from .mongo_loader import load_and_simplify_from_mongo
-
-            logger.info("Simplified traces not found, loading from MongoDB...")
-            count = load_and_simplify_from_mongo(config.mongo, traces_dir)
-            logger.info("Saved %d simplified trace files to %s", count, simplified_dir)
-
-    # 优先从简化轨迹加载（data/traces/simplified/{uuid}.json）
-    # 回退到传统 per-user JSON 文件加载
-    if simplified_dir.is_dir() and next(simplified_dir.glob("*.json"), None) is not None:
-        all_sessions = load_simplified_traces(traces_dir)
-        if not all_sessions:
-            raise RuntimeError(f"No valid simplified trace files found in {simplified_dir}")
-    else:
-        users = load_user_files(config.paths.data_dir)
-        if not users:
-            raise RuntimeError(f"No valid user data files found in {config.paths.data_dir}")
-        all_sessions = flatten_all_sessions(users)
+    # Step 0: 从指定目录加载 {uuid}.json 会话（自动展开 compressed_msgs）
+    all_sessions, _ = load_sessions(config.paths.sessions_dir)
+    if not all_sessions:
+        raise RuntimeError(
+            f"No valid session files found in {config.paths.sessions_dir}"
+        )
     logger.info("Loaded %d sessions", len(all_sessions))
 
     client = LLMClient(config.llm)

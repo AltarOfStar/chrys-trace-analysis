@@ -19,13 +19,10 @@ deviation_analysis:
   categorization_batch_size: 30
   random_seed: 42
 
-mongo:
-  uri: "mongodb://rwuser:Lingxi%402012@7.222.179.37:8635,7.222.178.97:8635/lingxi-test?authSource=admin"
-  database: "lingxi"
-  collection: "sessions"
-  min_add_lines: 100
+trace_analysis:
+  batch_size: 20
 
 paths:
   data_dir: "./data"
   output_dir: "./output"
-  traces_dir: "./data/traces"
+  sessions_dir: "./data/sessions"

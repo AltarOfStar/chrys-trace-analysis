@@ -12,7 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chrys Trace Analysis")
     parser.add_argument(
         "--pipeline",
-        choices=["deviation_analysis"],
+        choices=["deviation_analysis", "trace_analysis"],
         default="deviation_analysis",
         help="Which pipeline to run (default: deviation_analysis)",
     )
@@ -39,6 +39,19 @@ def main() -> None:
 
     config = load_config(args.config)
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.pipeline == "trace_analysis":
+        from chrys_trace_analysis.trace_analysis import run_trace_analysis
+
+        result = run_trace_analysis(config)
+        output_path = config.paths.output_dir / "trace_analysis" / "trace_analysis_result.json"
+        output_path.write_text(
+            json.dumps(result.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Done. Output written to {output_path}")
+        print(f"Summary: {json.dumps(result.summary, ensure_ascii=False, indent=2)}")
+        return
 
     from chrys_trace_analysis.offset_analysis import run_deviation_analysis
 
