@@ -30,3 +30,7 @@ data/
 # Environment
 .env
 .env.local
+
+# uv
+.pytest_cache/
+.ruff_cache/
