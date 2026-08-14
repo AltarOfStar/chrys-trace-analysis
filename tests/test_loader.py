@@ -25,6 +25,8 @@ from chrys_trace_analysis.loader import (  # noqa: E402
     build_session_abstract,
     build_session_turns,
     load_sessions,
+    parse_approval_log,
+    parse_sub_agent_session,
     to_reconstruct_envelope,
 )
 from chrys_trace_analysis.models import (  # noqa: E402
@@ -438,3 +440,259 @@ class TestCollectNames:
 
     def test_non_list(self):
         assert _collect_names("junk", "tool_name") == []
+
+
+# ==============================================================================
+# 嵌套布局 + approvals + sub_agents
+# ==============================================================================
+
+APPROVAL_LOG_APPROVED = """==============================================================================
+ATTEMPT 0
+==============================================================================
+
+--- USER ---
+Current time (local): 2026-07-29T10:58:41+08:00
+Current time (UTC): 2026-07-29T02:58:41+00:00
+
+Workspace directories: C:\\Users\\wty\\Desktop\\LingXi
+
+Current-turn user prompts:
+1. 解析下业务流程图
+
+Latest user prompt:
+解析下业务流程图
+
+Proposed action:
+Tool: powershell (kind: shell)
+Arguments:
+{
+  "command": "Get-ChildItem -Recurse",
+  "reason": "find files",
+  "timeout": 30
+}
+
+--- RESPONSE ---
+{"approved": true, "reason": "只读命令，安全无风险。"}
+
+--- VERDICT ---
+APPROVED: 只读命令，安全无风险。
+"""
+
+APPROVAL_LOG_REJECTED = """==============================================================================
+ATTEMPT 0
+==============================================================================
+
+--- USER ---
+Current time (UTC): 2026-07-29T07:50:04+00:00
+
+Latest user prompt:
+不要执行写操作
+
+Proposed action:
+Tool: write_file (kind: file)
+Arguments:
+{
+  "path": "src/a.py",
+  "content": "print(1)"
+}
+
+--- RESPONSE ---
+{"approved": false, "reason": "不要修改这个文件！"}
+
+--- VERDICT ---
+REJECTED: 不要修改这个文件！
+"""
+
+
+class TestParseApprovalLog:
+    def test_approved(self):
+        record = parse_approval_log(APPROVAL_LOG_APPROVED)
+        assert record is not None
+        assert record.timestamp == "2026-07-29T02:58:41+00:00"
+        assert record.tool_name == "powershell"
+        assert record.kind == "shell"
+        assert record.prompt == "解析下业务流程图"
+        assert record.approved is True
+        assert record.reason == "只读命令，安全无风险。"
+        assert "Get-ChildItem" in record.arguments_head
+
+    def test_rejected(self):
+        record = parse_approval_log(APPROVAL_LOG_REJECTED)
+        assert record is not None
+        assert record.approved is False
+        assert record.tool_name == "write_file"
+        assert record.reason == "不要修改这个文件！"
+
+    def test_garbage_returns_none(self):
+        assert parse_approval_log("totally not an approval log") is None
+
+
+class TestParseSubAgentSession:
+    def _write(self, tmp_path: Path) -> Path:
+        doc = {
+            "meta": {
+                "tool_name": "explore_agent",
+                "status": "completed",
+                "parent_provider_call_id": "call_001",
+                "prompt_preview": "Find all code that calls the data-server APIs.",
+            },
+            "state": {
+                "messages": [
+                    {"role": "user", "contents": [{"type": "text", "text": "go"}]},
+                    {"role": "assistant", "contents": [
+                        {"type": "function_call", "name": "glob", "arguments": "{}"},
+                    ]},
+                    {"role": "assistant", "contents": [
+                        {"type": "function_call", "name": "read_file", "arguments": "{}"},
+                        {"type": "function_call", "name": "read_file", "arguments": "{}"},
+                    ]},
+                ],
+                "compressed_msgs": [
+                    {"messages": [
+                        {"role": "assistant", "contents": [
+                            {"type": "function_call", "name": "powershell", "arguments": "{}"},
+                        ]},
+                    ]},
+                ],
+            },
+        }
+        fp = tmp_path / "explore_agent_abc.json"
+        fp.write_text(json.dumps(doc), encoding="utf-8")
+        return fp
+
+    def test_parses_counts_and_usage(self, tmp_path):
+        record = parse_sub_agent_session(self._write(tmp_path))
+        assert record is not None
+        assert record.tool_name == "explore_agent"
+        assert record.status == "completed"
+        assert record.parent_call_id == "call_001"
+        assert "data-server" in record.prompt_preview
+        assert record.message_count == 4  # 3 live + 1 compressed
+        assert record.tool_call_count == 4
+        assert record.tool_usage == {"read_file": 2, "glob": 1, "powershell": 1}
+
+    def test_bad_file_returns_none(self, tmp_path):
+        fp = tmp_path / "bad.json"
+        fp.write_text("{not json", encoding="utf-8")
+        assert parse_sub_agent_session(fp) is None
+
+
+class TestNestedLayout:
+    def _sample_envelope(self, uuid: str) -> dict:
+        return {
+            "meta": {"session_id": uuid, "user_id": "user_a"},
+            "state": {
+                "messages": [
+                    {"role": "user", "contents": [{"type": "text", "text": "写一个 add 函数。"}]},
+                    {"role": "assistant", "contents": [{"type": "text", "text": "已完成。"}],
+                     "additional_properties": {"_chrys_kind": "turn"}},
+                ]
+            },
+        }
+
+    def test_nested_layout_loads_approvals_and_sub_agents(self, tmp_path: Path):
+        session_dir = tmp_path / "sess-abc"
+        session_dir.mkdir()
+        # 用户消息与审批日志中的 Latest user prompt 一致，用于文本对齐
+        envelope = self._sample_envelope("sess-abc")
+        envelope["state"]["messages"][0]["contents"][0]["text"] = "解析下业务流程图"
+        (session_dir / "session.json").write_text(
+            json.dumps(envelope), encoding="utf-8",
+        )
+        approvals_dir = session_dir / "approvals"
+        approvals_dir.mkdir()
+        (approvals_dir / "a1.log").write_text(APPROVAL_LOG_APPROVED, encoding="utf-8")
+        (approvals_dir / "a2.log").write_text(APPROVAL_LOG_REJECTED, encoding="utf-8")
+        sub_dir = session_dir / "sub_agents" / "sessions"
+        sub_dir.mkdir(parents=True)
+        sub_doc = {
+            "meta": {
+                "tool_name": "explore_agent",
+                "status": "completed",
+                "parent_provider_call_id": "call_001",
+            },
+            "state": {"messages": []},
+        }
+        (sub_dir / "explore.json").write_text(json.dumps(sub_doc), encoding="utf-8")
+
+        traces, diagnostics = load_sessions(tmp_path)
+        assert len(traces) == 1
+        session = traces[0][1]
+        assert session.session_uuid == "sess-abc"
+        assert diagnostics["approval_records"] == 2
+        assert diagnostics["sub_agent_sessions"] == 1
+        assert len(session.approvals) == 2
+        assert len(session.sub_agents) == 1
+        # 审批按用户提示文本对齐：提示与轮次 user 消息一致的审批对齐到第 1 轮，
+        # 不一致的（拒绝日志里的"不要执行写操作"）保持 None
+        approved = [a for a in session.approvals if a.approved]
+        rejected = [a for a in session.approvals if not a.approved]
+        assert approved[0].turn_index == 1
+        assert rejected[0].turn_index is None
+        # 子代理按 parent call_id 对齐：会话中无匹配 call_id → None
+        assert session.sub_agents[0].turn_index is None
+
+    def test_sub_agent_aligned_by_call_id(self, tmp_path: Path):
+        session_dir = tmp_path / "sess-abc"
+        session_dir.mkdir()
+        doc = self._sample_envelope("sess-abc")
+        doc["state"]["messages"] = [
+            {"role": "user", "contents": [{"type": "text", "text": "q"}]},
+            {"role": "assistant", "contents": [
+                {"type": "function_call", "name": "explore_agent",
+                 "call_id": "call_001", "arguments": "{}"},
+            ]},
+            {"role": "tool", "contents": [{"type": "function_result",
+                                           "call_id": "call_001", "result": "ok"}]},
+            {"role": "assistant", "contents": [{"type": "text", "text": "done"}],
+             "additional_properties": {"_chrys_kind": "turn"}},
+        ]
+        (session_dir / "session.json").write_text(json.dumps(doc), encoding="utf-8")
+        sub_dir = session_dir / "sub_agents" / "sessions"
+        sub_dir.mkdir(parents=True)
+        sub_doc = {
+            "meta": {
+                "tool_name": "explore_agent",
+                "status": "completed",
+                "parent_provider_call_id": "call_001",
+            },
+            "state": {"messages": []},
+        }
+        (sub_dir / "explore.json").write_text(json.dumps(sub_doc), encoding="utf-8")
+
+        traces, _ = load_sessions(tmp_path)
+        session = traces[0][1]
+        assert session.sub_agents[0].turn_index == 1
+
+    def test_flat_and_nested_coexist(self, tmp_path: Path):
+        # 扁平文件
+        (tmp_path / "flat.json").write_text(
+            json.dumps(self._sample_envelope("flat")), encoding="utf-8",
+        )
+        # 嵌套会话
+        session_dir = tmp_path / "nested"
+        session_dir.mkdir()
+        (session_dir / "session.json").write_text(
+            json.dumps(self._sample_envelope("nested")), encoding="utf-8",
+        )
+        traces, diagnostics = load_sessions(tmp_path)
+        assert len(traces) == 2
+        assert diagnostics["total_documents"] == 2
+        uuids = {s.session_uuid for _, s in traces}
+        assert uuids == {"flat", "nested"}
+
+    def test_sessions_dir_is_itself_a_session_dir(self, tmp_path: Path):
+        """sessions_dir 直接指向某个会话目录（含 session.json + approvals/）。"""
+        (tmp_path / "session.json").write_text(
+            json.dumps(self._sample_envelope("sess-abc")), encoding="utf-8",
+        )
+        approvals_dir = tmp_path / "approvals"
+        approvals_dir.mkdir()
+        (approvals_dir / "a1.log").write_text(APPROVAL_LOG_APPROVED, encoding="utf-8")
+
+        traces, diagnostics = load_sessions(tmp_path)
+        assert len(traces) == 1
+        session = traces[0][1]
+        assert session.session_uuid == "sess-abc"
+        assert diagnostics["approval_records"] == 1
+        assert len(session.approvals) == 1

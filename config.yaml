@@ -23,8 +23,17 @@ deviation_analysis:
   random_seed: 42
 
 trace_analysis:
-  batch_size: 8
+  max_workers: 8            # 逐条并行分析并发调用 LLM 的线程数（无 batch 语义）
+  max_turns: 60             # 每条轨迹摘要最多保留的轮次数
+  max_user_chars: 600       # 每轮用户消息截断上限（字符）
+  max_assistant_chars: 1000 # 每轮助手答复截断上限（字符）
+  max_tool_args_chars: 200  # 每个工具调用参数预览截断上限（字符）
+  max_tool_calls_shown: 12  # 每轮摘要最多展示的工具调用条数
 
 paths:
   output_dir: "./output/WDM"
-  sessions_dir: "./data/WDM"
+  # sessions_dir 支持两种布局：
+  #   扁平：目录下直接放 {uuid}.json
+  #   嵌套：目录下放 {uuid}/session.json（chrys 本地 sessions 目录，
+  #         自动读取同级 approvals/ 审批记录与 sub_agents/ 子代理摘要）
+  sessions_dir: "./data/sessions"

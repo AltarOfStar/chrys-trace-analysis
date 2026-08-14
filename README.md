@@ -26,20 +26,36 @@ deviation_analysis:
   categorization_batch_size: 30
 
 trace_analysis:
-  batch_size: 20      # 每个批次的轨迹数量（默认 20）
+  max_workers: 8            # 逐条并行分析并发调用 LLM 的线程数（无 batch 语义）
+  max_turns: 60             # 每条轨迹摘要最多保留的轮次数
+  max_user_chars: 600       # 每轮用户消息截断上限（字符）
+  max_assistant_chars: 1000 # 每轮助手答复截断上限（字符）
+  max_tool_args_chars: 200  # 每个工具调用参数预览截断上限（字符）
+  max_tool_calls_shown: 12  # 每轮摘要最多展示的工具调用条数
 
 paths:
   data_dir: "./data"
   output_dir: "./output"
-  sessions_dir: "./data/sessions"   # 会话目录：存放 {uuid}.json 文件
+  # sessions_dir 支持两种布局：
+  #   扁平：目录下直接放 {uuid}.json
+  #   嵌套：目录下放 {uuid}/session.json（chrys 本地 sessions 目录的真实布局，
+  #         自动读取同级 approvals/ 审批记录与 sub_agents/ 子代理会话摘要）
+  sessions_dir: "./data/sessions"   # 会话目录：存放 {uuid}.json 或 {uuid}/session.json
 ```
 
 ## 数据输入
 
-本工具不再从 MongoDB 拉取数据。输入为 `paths.sessions_dir` 指定目录下的
-`{uuid}.json` 会话文件，每个文件对应一条会话。
+输入为 `paths.sessions_dir` 指定目录下的会话，支持两种布局：
 
-文件格式参考 chrys 本地会话 `session.json` 的 envelope 结构：
+- **扁平**：`{uuid}.json`，每个文件对应一条会话；
+- **嵌套**（chrys 本地 sessions 目录的真实布局）：`{uuid}/session.json`，
+  会话 UUID 取目录名，并自动读取同级伴生信息：
+  - `approvals/*.log`：工具调用前的人工审批检查点（人工交互的直接证据，
+    含批准/拒绝与理由，按用户提示或时间戳对齐到轮次）；
+  - `sub_agents/sessions/*.json`：子代理完整会话（主会话只保留最终结果，
+    这里保留子代理的内部工具调用统计与任务预览，按 call_id 对齐到轮次）。
+
+文件格式参考 chrys 本地 `session.json` 的 envelope 结构：
 
 ```json
 {
@@ -54,7 +70,7 @@ paths:
 根字段可能存在冗余字段，一律容忍；加载时会自动通过 reconstruct 模块将
 `compressed_msgs` 原位展开为完整消息（顶层 `messages` / `compressed_msgs`
 的扁平形态同样兼容）。会话 UUID 依次取根字段 `uuid`、`meta.session_id`、
-文件名（不含扩展名）。
+目录名/文件名。
 
 可用 `scripts/session_request.py <uuid>` 从统计服务下载单个会话生成
 `{uuid}.json`。
@@ -81,29 +97,40 @@ python -m chrys_trace_analysis.main --pipeline trace_analysis
 
 处理流程：
 
-1. **展开压缩消息**：加载 `paths.sessions_dir` 目录下的 `{uuid}.json` 会话，
-   通过 `reconstruct_messages` 将 `compressed_msgs` 原位展开为完整消息，
-   还原每条轨迹（轮次摘要 + 完整轮次）；
-2. **分批**：将轨迹按 `batch_size`（默认 20）划分批次，每个批次数量不低于 `batch_size`，
-   如有剩余（不足一个批次），将其并入最后一个批次（例如 65 条轨迹、batch_size=20
-   划分为 `[20, 20, 25]`）；
-3. **批次分析**：对每个批次组装提示词，要求模型逐条轨迹输出两个维度的分析：
-
-   - **任务维度**：`task_category`（单个词的任务分类）+ `task_summary`（一小段话概括任务内容）；
-   - **人工介入维度**：`human_intervention`（是否存在人工介入）；若存在，逐次输出
-     `interventions`，每次包含介入类型（指出错误、补充信息、需求变更等）、介入位置
-     （如"第2轮用户消息"）与简要描述。
-
-4. **跨批次聚合**：将所有批次自由形式的任务分类与人工介入类型聚合成几个固定种类，
-   将每个批次的分析结果替换为聚合后的标准分类，输出最终聚合信息（固定种类定义 +
-   分布）与每条轨迹的对应信息。
+1. **展开压缩消息**：加载 `paths.sessions_dir` 目录下的会话（扁平
+   `{uuid}.json` 或嵌套 `{uuid}/session.json`），通过 `reconstruct_messages`
+   将 `compressed_msgs` 原位展开为完整消息；嵌套布局额外读取
+   `approvals/` 审批记录与 `sub_agents/` 子代理摘要并对齐到轮次；
+2. **本地摘要压缩**：每条轨迹压缩为紧凑摘要——每轮保留截断后的用户消息、
+   最终助手答复、工具调用（含参数预览）、人工审批检查点与子代理摘要
+   （`max_user_chars` / `max_assistant_chars` / `max_tool_args_chars` /
+   `max_tool_calls_shown` 控制截断，`max_turns` 控制轮次上限），并抽取
+   确定性特征（轮次数、工具调用次数、审批/拒绝次数、子代理统计等）。
+   由于每次 LLM 调用只包含一条轨迹（无 batch 拼接），截断上限可以放宽，
+   每条轨迹保留更多内容用于分析；
+3. **逐条并行分析**：每条轨迹独立调用一次 LLM（`max_workers` 个线程并发），
+   输入为单条轨迹摘要、输出上限 4096 tokens，token 天然不会超限；
+   输出任务分类（单个词）、任务概括与每次人工介入（结构化轮次号 + 类型 +
+   描述），结果落盘 `trajectories/{uuid}.json`，崩溃后可复用续跑；
+   提示词中明确告知模型：批准类审批检查点本身不是人工介入，但审批理由
+   中的重定向（如"只读即可，不要修改文件"）与拒绝类检查点属于人工介入；
+4. **跨轨迹聚合**：将自由形式的任务分类与人工介入类型聚合成固定种类
+   （固定种类定义 + 分布 + 成员轨迹列表 + 原始→标准映射），替换每条轨迹/
+   每次介入的分类；
+5. **输出**：分类总览（`overview.md`，人类可读）、每条轨迹的类别与特征、
+   每次人工介入的类别。
 
 输出位于 `output/trace_analysis/`：
 
-- `batch_analysis/batch_{n}.json`：每个批次的分析结果（崩溃后可复用续跑）；
-- `aggregation.json`：跨批次聚合结果（固定种类与原始→标准映射）；
-- `trace_analysis_result.json`：最终结果，含每条轨迹的任务/介入分析、固定种类、
-  映射关系与汇总统计。
+- `trajectories/{uuid}.json`：每条轨迹的逐条分析结果（崩溃后可复用续跑）；
+- `aggregation.json`：跨轨迹聚合结果（固定种类与原始→标准映射）；
+- `trace_analysis_result.json`：完整机器可读结果——每条轨迹的任务/介入分析
+  （含 `task_category_raw` / `type_raw` 原始分类与聚合后标准分类、`features`
+  特征、`failed` 标记）、固定种类（每个分类带 `count` 计数与
+  `session_uuids` 成员轨迹列表）、映射关系与汇总统计
+  （`per_task_category_distribution` 等为真实计数分布）；
+- `overview.md`：人类可读的分类总览——汇总数量 + 每个分类的成员轨迹 +
+  每条轨迹的任务分类/概括/介入详情。
 
 ## 测试
 

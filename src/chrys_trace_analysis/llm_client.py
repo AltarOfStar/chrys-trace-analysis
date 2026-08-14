@@ -84,7 +84,12 @@ class LLMClient:
             max_retries=0,
         )
 
-    def chat(self, system_prompt: str, user_prompt: str) -> str:
+    def chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int | None = None,
+    ) -> str:
         logger.info("LLM chat: model=%s, user_prompt_len=%d",
                     self.config.model_name, len(user_prompt))
         response = self.client.chat.completions.create(
@@ -94,14 +99,19 @@ class LLMClient:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
+            max_tokens=max_tokens if max_tokens is not None else self.config.max_tokens,
         )
         content = response.choices[0].message.content or ""
         logger.info("LLM response length: %d", len(content))
         return content
 
-    def chat_json(self, system_prompt: str, user_prompt: str) -> dict | list:
-        raw = self.chat(system_prompt, user_prompt)
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int | None = None,
+    ) -> dict | list:
+        raw = self.chat(system_prompt, user_prompt, max_tokens=max_tokens)
         return self._parse_json(raw)
 
     @staticmethod

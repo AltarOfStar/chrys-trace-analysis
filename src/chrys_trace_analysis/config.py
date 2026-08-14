@@ -33,7 +33,23 @@ class DeviationAnalysisConfig(BaseModel):
 
 
 class TraceAnalysisConfig(BaseModel):
-    batch_size: int = 20
+    """逐条轨迹分析的并行度与摘要压缩参数。
+
+    分析阶段为逐条并行：每次 LLM 调用只包含一条轨迹，因此可以给每条轨迹
+    保留更多内容（放宽截断上限）而无需担心 batch 拼接导致的 token 超限。
+
+    - max_workers: 并发调用 LLM 的线程数；
+    - max_turns: 每条轨迹摘要最多保留的轮次数（超出部分截断并在提示词中注明）；
+    - max_user_chars / max_assistant_chars: 每轮用户消息 / 助手答复的截断上限；
+    - max_tool_args_chars: 每个工具调用参数预览的截断上限；
+    - max_tool_calls_shown: 每轮摘要最多展示的工具调用条数。
+    """
+    max_workers: int = 8
+    max_turns: int = 60
+    max_user_chars: int = 600
+    max_assistant_chars: int = 1000
+    max_tool_args_chars: int = 200
+    max_tool_calls_shown: int = 12
 
 
 class PathsConfig(BaseModel):
