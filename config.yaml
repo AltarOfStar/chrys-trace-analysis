@@ -1,9 +1,12 @@
 llm:
-  api_endpoint: "http://mlops.huawei.com/mlops-service/api/v2/agentService/v1"
-  api_key: "sk-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50SWQiOiJtMDA5NjUxMjciLCJhY2NvdW50TmFtZSI6Im1hb3FpaGVuZyIsImRlcGFydG1lbnROYW1lIjoidW5rbm93biIsInRlbmFudElkIjoiOTM2YjNmOTQ5Yzg4MWQzMjY5OGRlNGYwYzc5MGI5NmQiLCJrZXlWZXJzaW9uIjoiMi4wIn0.32pZ2Z4Za7IGmUeHW76bnHHFFpDW489L83FsrT4QQH4"
-  model_name: "qwen36-27b-vl"
+  # api_endpoint: "http://mlops.huawei.com/mlops-service/api/v2/agentService/v1"
+  # api_key: "sk-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50SWQiOiJtMDA5NjUxMjciLCJhY2NvdW50TmFtZSI6Im1hb3FpaGVuZyIsImRlcGFydG1lbnROYW1lIjoidW5rbm93biIsInRlbmFudElkIjoiOTM2YjNmOTQ5Yzg4MWQzMjY5OGRlNGYwYzc5MGI5NmQiLCJrZXlWZXJzaW9uIjoiMi4wIn0.32pZ2Z4Za7IGmUeHW76bnHHFFpDW489L83FsrT4QQH4"
+  # model_name: "qwen36-27b-vl"
+  api_endpoint: "http://lingxi-infer-ha.rnd.huawei.com:8978/v1/"
+  api_key: "0NzIwNywia2V5VmVyc2lvbiI6IjMuMCJ9.1QgK6S3xaBKIcKTsVDJMQ7IbLVi8Vg6bqt5oriPwd64"
+  model_name: "lingxi"
   temperature: 0.7
-  max_tokens: 8192
+  max_tokens: 20000
   no_proxy: true
 
 pipeline:
@@ -20,9 +23,8 @@ deviation_analysis:
   random_seed: 42
 
 trace_analysis:
-  batch_size: 20
+  batch_size: 8
 
 paths:
-  data_dir: "./data"
-  output_dir: "./output"
-  sessions_dir: "./data/sessions"
+  output_dir: "./output/WDM"
+  sessions_dir: "./data/WDM"

@@ -37,7 +37,6 @@ class TraceAnalysisConfig(BaseModel):
 
 
 class PathsConfig(BaseModel):
-    data_dir: Path
     output_dir: Path
     sessions_dir: Path
 
@@ -66,11 +65,7 @@ def load_config(path: str | Path) -> Config:
     raw["llm"]["api_key"] = _resolve_env_vars(raw["llm"]["api_key"])
 
     config_dir = Path(path).resolve().parent
-    raw["paths"]["data_dir"] = (config_dir / raw["paths"]["data_dir"]).resolve()
     raw["paths"]["output_dir"] = (config_dir / raw["paths"]["output_dir"]).resolve()
-    if "sessions_dir" in raw.get("paths", {}):
-        raw["paths"]["sessions_dir"] = (config_dir / raw["paths"]["sessions_dir"]).resolve()
-    else:
-        raw["paths"]["sessions_dir"] = raw["paths"]["data_dir"] / "sessions"
+    raw["paths"]["sessions_dir"] = (config_dir / raw["paths"]["sessions_dir"]).resolve()
 
     return Config.model_validate(raw)
